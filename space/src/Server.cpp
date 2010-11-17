@@ -59,10 +59,11 @@
 namespace Sirikata
 {
 
-Server::Server(SpaceContext* ctx, Forwarder* forwarder, LocationService* loc_service, CoordinateSegmentation* cseg, Proximity* prox, ObjectSegmentation* oseg, Address4* oh_listen_addr)
+Server::Server(SpaceContext* ctx, Forwarder* forwarder, LocationService* loc_service, AudioService* audio_service, CoordinateSegmentation* cseg, Proximity* prox, ObjectSegmentation* oseg, Address4* oh_listen_addr)
  : ODP::DelegateService( std::tr1::bind(&Server::createDelegateODPPort, this, std::tr1::placeholders::_1, std::tr1::placeholders::_2, std::tr1::placeholders::_3) ),
    mContext(ctx),
    mLocationService(loc_service),
+   mAudioService(audio_service),
    mCSeg(cseg),
    mProximity(prox),
    mOSeg(oseg),
@@ -78,6 +79,7 @@ Server::Server(SpaceContext* ctx, Forwarder* forwarder, LocationService* loc_ser
     mContext->mObjectSessionManager = this;
 
     this->addListener((ObjectSessionListener*)mLocationService);
+    this->addListener((ObjectSessionListener*)mAudioService);
 
     mTimeSyncServer = new TimeSyncServer(mContext);
 

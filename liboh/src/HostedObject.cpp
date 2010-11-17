@@ -952,6 +952,7 @@ bool HostedObject::delegateODPPortSend(const ODP::Endpoint& source_ep, const ODP
 void HostedObject::requestLocationUpdate(const SpaceID& space, const ObjectReference& oref, const TimedMotionVector3f& loc)
 {
     sendLocUpdateRequest(space, oref,&loc, NULL, NULL, NULL);
+		pingSpace (space, oref);
 }
 
 //only update the position of the object, leave the velocity and orientation unaffected
@@ -1111,6 +1112,31 @@ void HostedObject::sendLocUpdateRequest(const SpaceID& space, const ObjectRefere
         conn->datagram( (void*)payload.data(), payload.size(), OBJECT_PORT_LOCATION,
             OBJECT_PORT_LOCATION, NULL);
     }
+}
+
+// Test: Ping space server
+void HostedObject::pingSpace (const SpaceID& space, const ObjectReference& oref) {
+		std::string payload = "Hello Space";
+		SSTStreamPtr spaceStream = mObjectHost->getSpaceStream(space, getUUID());
+    if (spaceStream != SSTStreamPtr()) {
+/*        SSTConnectionPtr conn = spaceStream->connection().lock();
+        assert(conn);
+
+        conn->datagram( (void*)payload.data(), payload.size(), OBJECT_PORT_AUDIO,
+            OBJECT_PORT_AUDIO, NULL);
+*/
+
+				SILOG(oh,warn,"\n\n\n\n\n\n\n\n[OH] Sending a message to space server. \n\n\n\n");
+				spaceStream->createChildStream (
+						std::tr1::bind(&HostedObject::audioSubstreamCallback, this, _1, _2, spaceStream, payload),
+        		(void*)payload.data(), payload.size(),
+        		OBJECT_PORT_AUDIO, OBJECT_PORT_AUDIO
+				);
+    }
+}
+
+void HostedObject::audioSubstreamCallback(int x, SSTStreamPtr substream, SSTStreamPtr spaceStream, std::string msg) {
+				SILOG(oh,warn,"\n\n\n\n\n\n\n\n[OH] Received callback. \n\n\n\n");
 }
 
 

@@ -57,6 +57,7 @@ typedef uint16 ServerMessagePort;
 #define SERVER_PORT_OSEG_MIGRATE_ACKNOWLEDGE   9
 #define SERVER_PORT_OSEG_UPDATE                15
 #define SERVER_PORT_FORWARDER_WEIGHT_UPDATE    16
+#define SERVER_PORT_AUDIO                      17
 #define SERVER_PORT_UNPROCESSED_PACKET         0xFFFF
 
 /** Base class for messages that go over the network.  Must provide

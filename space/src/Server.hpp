@@ -60,6 +60,7 @@ class Forwarder;
 class LocalForwarder;
 
 class LocationService;
+class AudioService;
 class Proximity;
 class MigrationMonitor;
 
@@ -78,7 +79,7 @@ class ObjectHostConnectionManager;
 class Server : public MessageRecipient, public Service, public OSegWriteListener, public ODP::DelegateService, ObjectSessionManager
 {
 public:
-    Server(SpaceContext* ctx, Forwarder* forwarder, LocationService* loc_service, CoordinateSegmentation* cseg, Proximity* prox, ObjectSegmentation* oseg, Address4* oh_listen_addr);
+    Server(SpaceContext* ctx, Forwarder* forwarder, LocationService* loc_service, AudioService* audio_service, CoordinateSegmentation* cseg, Proximity* prox, ObjectSegmentation* oseg, Address4* oh_listen_addr);
     ~Server();
 
     virtual void receiveMessage(Message* msg);
@@ -166,6 +167,7 @@ private:
     TimeSyncServer* mTimeSyncServer;
 
     LocationService* mLocationService;
+    AudioService* mAudioService;
     CoordinateSegmentation* mCSeg;
     Proximity* mProximity;
     ObjectSegmentation* mOSeg;

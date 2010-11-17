@@ -113,6 +113,7 @@ void LocationService::newSession(ObjectSession* session) {
             std::tr1::placeholders::_1,std::tr1::placeholders::_2
         )
     );
+
 }
 
 void LocationService::poll() {

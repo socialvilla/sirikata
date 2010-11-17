@@ -372,6 +372,4 @@ void StandardLocationService::locationUpdate(UUID source, void* buffer, uint32 l
     }
 }
 
-
-
 } // namespace Sirikata

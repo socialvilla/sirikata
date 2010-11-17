@@ -42,6 +42,7 @@
 #include "Forwarder.hpp"
 
 #include <sirikata/space/LocationService.hpp>
+#include <sirikata/space/AudioService.hpp>
 
 #include "Proximity.hpp"
 #include "Server.hpp"
@@ -147,6 +148,8 @@ int main(int argc, char** argv) {
     LocationService* loc_service =
         LocationServiceFactory::getSingleton().getConstructor(loc_service_type)(space_context, loc_update_policy, loc_service_opts);
 
+    AudioService* audio_service = new AudioService (space_context);
+
     ServerMessageQueue* sq = NULL;
     String server_queue_type = GetOptionValue<String>(SERVER_QUEUE);
     if (server_queue_type == "fair") {
@@ -209,7 +212,7 @@ int main(int argc, char** argv) {
     Proximity* prox = new Proximity(space_context, loc_service);
 
 
-    Server* server = new Server(space_context, forwarder, loc_service, cseg, prox, oseg, server_id_map->lookupExternal(space_context->id()));
+    Server* server = new Server(space_context, forwarder, loc_service, audio_service, cseg, prox, oseg, server_id_map->lookupExternal(space_context->id()));
 
       prox->initialize(cseg);
 

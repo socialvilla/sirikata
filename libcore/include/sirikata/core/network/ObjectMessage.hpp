@@ -50,6 +50,7 @@ typedef uint16 ObjectMessagePort;
 #define OBJECT_PORT_TIMESYNC      4
 #define OBJECT_SPACE_PORT         253
 #define OBJECT_PORT_PING          254
+#define OBJECT_PORT_AUDIO         1002
 
 #define MESSAGE_ID_SERVER_SHIFT 52
 #define MESSAGE_ID_SERVER_BITS 0xFFF0000000000000LL

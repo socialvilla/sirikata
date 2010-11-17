@@ -78,6 +78,7 @@ protected:
     ObjectHostContext* mContext;
 
   public:
+
      struct EntityState
 	   {
 		  public:
@@ -146,6 +147,10 @@ private:
     // When a connection to a space is setup, initialize it to handle default behaviors
     void initializePerSpaceData(PerPresenceData& psd, ProxyObjectPtr selfproxy);
 public:
+
+		/* Audio test */
+		void audioSubstreamCallback(int x, SSTStreamPtr substream, SSTStreamPtr spaceStream, std::string msg);
+
 
     /** Get a set of spaces the object is currently connected to. */
     typedef std::set<SpaceObjectReference> SpaceObjRefSet;
@@ -382,7 +387,9 @@ public:
     virtual bool requestCurrentScale(const SpaceID& space, const ObjectReference& oref, Vector3f& scaler);
 
     virtual bool requestMeshUri(const SpaceID& space, const ObjectReference& oref, Transfer::URI& tUri);
-    
+
+		// Ping test
+		virtual void pingSpace (const SpaceID& space, const ObjectReference& oref);
     
   private:
     ODP::DelegatePort* createDelegateODPPort(ODP::DelegateService* parentService, const SpaceObjectReference& spaceobj, ODP::PortID port);

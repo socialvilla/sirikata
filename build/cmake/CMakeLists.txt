@@ -1180,6 +1180,7 @@ SET(LIBSPACE_SOURCES
   ${LIBSPACE_SOURCE_DIR}/PintoServerQuerier.cpp
   ${LIBSPACE_SOURCE_DIR}/ProxSimulationTraits.cpp
   ${LIBSPACE_SOURCE_DIR}/LocationService.cpp
+  ${LIBSPACE_SOURCE_DIR}/AudioService.cpp
   )
 
 SET(LIBPROXYOBJECT_SOURCES
