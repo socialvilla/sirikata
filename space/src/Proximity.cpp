@@ -218,6 +218,38 @@ void Proximity::shutdown() {
     }
 }
 
+void Proximity::newSession(ObjectSession* session) {
+    using std::tr1::placeholders::_1;
+    using std::tr1::placeholders::_2;
+
+    Stream<SpaceObjectReference>::Ptr strm = session->getStream();
+    Connection<SpaceObjectReference>::Ptr conn = strm->connection().lock();
+    assert(conn);
+
+    SpaceObjectReference sourceObject = conn->remoteEndPoint().endPoint;
+
+    conn->registerReadDatagramCallback( OBJECT_PORT_PROXIMITY,
+        std::tr1::bind(
+            &Proximity::handleObjectProximityMessage, this,
+            sourceObject.object().getAsUUID(),
+            _1, _2
+        )
+    );
+}
+
+void Proximity::handleObjectProximityMessage(const UUID& objid, void* buffer, uint32 length) {
+    Sirikata::Protocol::Prox::QueryRequest prox_update;
+    bool parse_success = prox_update.ParseFromString( String((char*) buffer, length) );
+    if (!parse_success) {
+        LOG_INVALID_MESSAGE_BUFFER(prox, error, ((char*)buffer), length);
+        return;
+    }
+
+    if (!prox_update.has_query_angle()) return;
+
+    updateQuery(objid, mLocService->location(objid), mLocService->bounds(objid), SolidAngle(prox_update.query_angle()));
+}
+
 // Setup all known servers for a server query update
 void Proximity::addAllServersForUpdate() {
     boost::lock_guard<boost::mutex> lck(mServerSetMutex);
@@ -359,7 +391,10 @@ std::string Proximity::generateMigrationData(const UUID& obj, ServerID source_se
 void Proximity::receiveMigrationData(const UUID& obj, ServerID source_server, ServerID dest_server, const std::string& data) {
     Sirikata::Protocol::Prox::ObjectMigrationData migr_data;
     bool parse_success = migr_data.ParseFromString(data);
-    assert(parse_success);
+    if (!parse_success) {
+        LOG_INVALID_MESSAGE(prox, error, data);
+        return;
+    }
 
     SolidAngle obj_query_angle(migr_data.min_angle());
     addQuery(obj, obj_query_angle);

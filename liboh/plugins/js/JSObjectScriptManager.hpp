@@ -35,7 +35,7 @@
 
 
 #include <sirikata/oh/ObjectScriptManager.hpp>
-
+#include <sirikata/core/options/Options.hpp>
 
 #include <v8.h>
 
@@ -49,9 +49,10 @@ public:
     JSObjectScriptManager(const Sirikata::String& arguments);
     virtual ~JSObjectScriptManager();
 
-    virtual ObjectScript* createObjectScript(HostedObjectPtr ho,
-        const Arguments &args);
+    virtual ObjectScript* createObjectScript(HostedObjectPtr ho, const String& args);
     virtual void destroyObjectScript(ObjectScript* toDestroy);
+
+    OptionSet* getOptions() const { return mOptions; }
 
     v8::Persistent<v8::ObjectTemplate> mEntityTemplate;
     v8::Persistent<v8::ObjectTemplate> mHandlerTemplate;
@@ -61,23 +62,23 @@ public:
     v8::Persistent<v8::ObjectTemplate> mContextTemplate;
     v8::Persistent<v8::ObjectTemplate> mMathTemplate;
     void testPrint();
-    
+
 private:
 
     void createAddressableTemplate();
     void createSystemTemplate();
-    void createSystemTemplate_old();
     void createHandlerTemplate();
     void createPresenceTemplate();
     void createContextTemplate();
     void createMathTemplate();
-    
+
     // The manager tracks the templates so they can be reused by all the
     // individual scripts.
     v8::Persistent<v8::FunctionTemplate> mVec3Template;
     v8::Persistent<v8::FunctionTemplate> mQuaternionTemplate;
     v8::Persistent<v8::FunctionTemplate> mPatternTemplate;
-    
+
+    OptionSet* mOptions;
 };
 
 } // namespace JS

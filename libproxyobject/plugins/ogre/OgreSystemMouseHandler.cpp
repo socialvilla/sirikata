@@ -33,13 +33,12 @@
 #include <sirikata/proxyobject/Platform.hpp>
 #include "OgreSystem.hpp"
 #include "OgreMeshRaytrace.hpp"
-#include "CameraEntity.hpp"
+#include "Camera.hpp"
 #include "Lights.hpp"
-#include "MeshEntity.hpp"
+#include "Entity.hpp"
 #include "input/SDLInputManager.hpp"
 #include <sirikata/proxyobject/ProxyManager.hpp>
 #include <sirikata/proxyobject/ProxyObject.hpp>
-#include <sirikata/proxyobject/ProxyMeshObject.hpp>
 #include "input/InputEvents.hpp"
 #include "input/SDLInputDevice.hpp"
 #include "DragActions.hpp"
@@ -51,6 +50,7 @@
 #include <sirikata/core/task/Time.hpp>
 #include <SDL_keysym.h>
 #include <set>
+#include <sirikata/core/transfer/DiskManager.hpp>
 
 #include "WebViewManager.hpp"
 #include "CameraPath.hpp"
@@ -59,6 +59,7 @@
 #include <sirikata/core/util/KnownScriptTypes.hpp>
 #include "Protocol_JSMessage.pbj.hpp"
 #include <boost/lexical_cast.hpp>
+#include <boost/filesystem.hpp>
 
 namespace Sirikata {
 namespace Graphics {
@@ -82,33 +83,29 @@ using namespace std;
 #define SDL_SCANCODE_PAGEDOWN 0x5b
 #endif
 
-bool compareEntity (const Entity* one, const Entity* two) {
-
+// FIXME this needs to be documented. this used to rely on whether entities were
+// cameras or not (using position instead of names). it is not clear at all how
+// or why this method is supposed to be the right way to compare entities.
+bool compareEntity (const Entity* one, const Entity* two)
+{
     ProxyObject *pp = one->getProxyPtr().get();
 
-    ProxyCameraObject* camera1 = dynamic_cast<ProxyCameraObject*>(pp);
-    ProxyMeshObject* mesh1 = dynamic_cast<ProxyMeshObject*>(pp);
     Time now = one->getScene()->simTime();
     Location loc1 = pp->globalLocation(now);
-    pp = two->getProxyPtr().get();
-    Location loc2 = pp->globalLocation(now);
-    ProxyCameraObject* camera2 = dynamic_cast<ProxyCameraObject*>(pp);
-    ProxyMeshObject* mesh2 = dynamic_cast<ProxyMeshObject*>(pp);
-    if (camera1 && !camera2) return true;
-    if (camera2 && !camera1) return false;
-    if (camera1 && camera2) {
-        return loc1.getPosition().x < loc2.getPosition().x;
-    }
 
-    if (mesh1 && mesh2) {
-        return mesh1->getPhysical().name < mesh2->getPhysical().name;
-    }
+    ProxyObject* pp2;
+    pp2 = two->getProxyPtr().get();
+    Location loc2 = pp->globalLocation(now);
+
+    return pp->getPhysical().name < pp2->getPhysical().name;
+
     return one<two;
 }
 
+
 // Defined in DragActions.cpp.
 
-class OgreSystem::MouseHandler {
+class OgreSystem::OgreSystemMouseHandler : public MouseHandler {
     OgreSystem *mParent;
     std::vector<SubscriptionId> mEvents;
     typedef std::multimap<InputDevice*, SubscriptionId> DeviceSubMap;
@@ -164,8 +161,7 @@ class OgreSystem::MouseHandler {
     Task::LocalTime mLastCameraTime;
     Task::LocalTime mLastFpsTime;
 
-    typedef std::map<String, InputResponse*> InputResponseMap;
-    InputResponseMap mInputResponses;
+    InputBinding::InputResponseMap mInputResponses;
 
     InputBinding mInputBinding;
 
@@ -213,14 +209,14 @@ class OgreSystem::MouseHandler {
 
     /////////////////// HELPER FUNCTIONS ///////////////
 
-    void mouseOverWebView(CameraEntity *cam, Time time, float xPixel, float yPixel, bool mousedown, bool mouseup) {
-        Location location(cam->getProxy().globalLocation(time));
+    void mouseOverWebView(Camera *cam, Time time, float xPixel, float yPixel, bool mousedown, bool mouseup) {
+        Location location(cam->following()->getProxy().globalLocation(time));
         Vector3f dir (pixelToDirection(cam, location.getOrientation(), xPixel, yPixel));
         Ogre::Ray traceFrom(toOgre(location.getPosition(), mParent->getOffset()), toOgre(dir));
         ProxyObjectPtr obj(mMouseDownObject.lock());
         Entity *ent = obj ? mParent->getEntity(obj->getObjectReference()) : NULL;
         if (mMouseDownTri.intersected && ent) {
-            MeshEntity *me = static_cast<MeshEntity*>(ent);
+            Entity *me = ent;
             IntersectResult res = mMouseDownTri;
             res.distance = 1.0e38;
 /* fixme */
@@ -234,27 +230,11 @@ class OgreSystem::MouseHandler {
             newt.v3.coord = (orient * (newt.v3.coord * scale)) + position;
 /* */
             OgreMesh::intersectTri(OgreMesh::transformRay(ent->getSceneNode(), traceFrom), res, &newt, true); // &res.tri
-            WebView *wv = me->getWebView(mMouseDownSubEntity);
-            if (wv) {
-                unsigned short int wid=0,hei=0;
-                wv->getExtents(wid,hei);
-                int x = res.u * wid;
-                int y = res.v * hei;
-                if (mousedown) {
-                    wv->injectMouseDown(x, y);
-                }
-                if (mouseup) {
-                    wv->injectMouseUp(x, y);
-                }
-                if (!mousedown && !mouseup) {
-                    wv->injectMouseMove(x, y);
-                }
-            }
         }
     }
 
-    Entity *hoverEntity (CameraEntity *cam, Time time, float xPixel, float yPixel, bool mousedown, int *hitCount,int which=0) {
-        Location location(cam->getProxy().globalLocation(time));
+    Entity *hoverEntity (Camera *cam, Time time, float xPixel, float yPixel, bool mousedown, int *hitCount,int which=0) {
+        Location location(cam->following()->getProxy().globalLocation(time));
         Vector3f dir (pixelToDirection(cam, location.getOrientation(), xPixel, yPixel));
         SILOG(input,info,"X is "<<xPixel<<"; Y is "<<yPixel<<"; pos = "<<location.getPosition()<<"; dir = "<<dir);
 
@@ -265,15 +245,11 @@ class OgreSystem::MouseHandler {
         Ogre::Ray traceFrom(toOgre(location.getPosition(), mParent->getOffset()), toOgre(dir));
         Entity *mouseOverEntity = mParent->internalRayTrace(traceFrom, false, *hitCount, dist, normal, subent, &res, mousedown, which);
         if (mousedown && mouseOverEntity) {
-            MeshEntity *me = dynamic_cast<MeshEntity*>(mouseOverEntity);
+            Entity *me = mouseOverEntity;
             if (me) {
                 mMouseDownTri = res;
                 mMouseDownObject = me->getProxyPtr();
                 mMouseDownSubEntity = subent;
-                WebView *wv = me->getWebView(mMouseDownSubEntity);
-                if (wv) {
-                    //if (which==0) {*hitCount=-1;}
-                }
             }
         }
         if (mouseOverEntity) {
@@ -353,7 +329,7 @@ private:
     int mWhichRayObject;
     void selectObjectAction(Vector2f p, int direction) {
         if (!mParent||!mParent->mPrimaryCamera) return;
-        CameraEntity *camera = mParent->mPrimaryCamera;
+        Camera *camera = mParent->mPrimaryCamera;
         Time time = mParent->simTime();
 
         if (!camera) {
@@ -549,7 +525,7 @@ private:
         }
         SpaceObjectReference parentId = mCurrentGroup;
 
-        ProxyManager *proxyMgr = mParent->mPrimaryCamera->getProxy().getProxyManager();
+        ProxyManager *proxyMgr = mParent->mPrimaryCamera->following()->getProxy().getProxyManager();
         Time now = mParent->simTime();
         for (SelectedObjectSet::iterator iter = mSelectedObjects.begin();
                 iter != mSelectedObjects.end(); ++iter) {
@@ -695,7 +671,7 @@ private:
 
     /** Create a UI element for interactively scripting an object.
         Sends a message on KnownServices port LISTEN_FOR_SCRIPT_BEGIN to the
-        HostedObject. 
+        HostedObject.
      */
     void createScriptingUIAction() {
 
@@ -734,10 +710,10 @@ private:
 
                     ui_info.scripting = new_scripting_ui;
                     mScriptingUIObjects[new_scripting_ui] = obj;
-                    //new_scripting_ui->bind("event", std::tr1::bind(&MouseHandler::executeScript,this,_1,_2));
+                    //new_scripting_ui->bind("event", std::tr1::bind(&OgreSystemMouseHandler::executeScript,this,_1,_2));
                     //        lkjs;
 
-                    new_scripting_ui->bind("event", std::tr1::bind(&MouseHandler::executeScript, this, _1, _2));
+                    new_scripting_ui->bind("event", std::tr1::bind(&OgreSystemMouseHandler::executeScript, this, _1, _2));
 
             //lkjs;
                     return;
@@ -754,9 +730,9 @@ private:
 
                 ui_info.scripting = new_scripting_ui;
                 mScriptingUIObjects[new_scripting_ui] = obj;
-                new_scripting_ui->bind("event", std::tr1::bind(&MouseHandler::executeScript, this, _1, _2));
+                new_scripting_ui->bind("event", std::tr1::bind(&OgreSystemMouseHandler::executeScript, this, _1, _2));
                 //lkjs
-                //new_scripting_ui->bind("event", std::tr1::bind(&MouseHandler::executeScript,this,_1,_2));
+                //new_scripting_ui->bind("event", std::tr1::bind(&OgreSystemMouseHandler::executeScript,this,_1,_2));
                 onceInitialized = true;
 
             }
@@ -767,7 +743,7 @@ private:
 /*
         float WORLD_SCALE = mParent->mInputManager->mWorldScale->as<float>();
 
-        CameraEntity *camera = mParent->mPrimaryCamera;
+        Camera *camera = mParent->mPrimaryCamera;
         if (!camera) return;
         SpaceObjectReference newId = SpaceObjectReference(camera->id().space(), ObjectReference(UUID::random()));
         ProxyManager *proxyMgr = camera->getProxy().getProxyManager();
@@ -806,7 +782,7 @@ private:
 /*
         float WORLD_SCALE = mParent->mInputManager->mWorldScale->as<float>();
 
-        CameraEntity *camera = mParent->mPrimaryCamera;
+        Camera *camera = mParent->mPrimaryCamera;
         if (!camera) return;
         Time now = mParent->simTime();
         Location curLoc (camera->getProxy().globalLocation(now));
@@ -862,7 +838,7 @@ private:
             printf("startUploadObject called. Opening upload UI.\n");
             mUploadWebView = WebViewManager::getSingleton().createWebView("upload_tool", "upload_tool",404, 227,
                     OverlayPosition(RP_CENTER), false, 70, TIER_FRONT);
-            mUploadWebView->bind("event", std::tr1::bind(&MouseHandler::onUploadObjectEvent, this, _1, _2));
+            mUploadWebView->bind("event", std::tr1::bind(&OgreSystemMouseHandler::onUploadObjectEvent, this, _1, _2));
             mUploadWebView->loadFile("chrome/upload.html");
         }
     }
@@ -874,7 +850,7 @@ private:
         } else {
             mQueryAngleWidgetView = WebViewManager::getSingleton().createWebView("query_angle_widget", "query_angle_widget",300, 100,
                     OverlayPosition(RP_BOTTOMRIGHT), false, 70, TIER_FRONT);
-            mQueryAngleWidgetView->bind("set_query_angle", std::tr1::bind(&MouseHandler::handleSetQueryAngle, this, _1, _2));
+            mQueryAngleWidgetView->bind("set_query_angle", std::tr1::bind(&OgreSystemMouseHandler::handleSetQueryAngle, this, _1, _2));
             mQueryAngleWidgetView->loadFile("debug/query_angle.html");
         }
     }
@@ -887,7 +863,7 @@ private:
     }
 
     void handleSetQueryAngleTimeout() {
-        printf("New query angle: %f\n", mNewQueryAngle);
+        mParent->mViewer->requestQueryUpdate(mParent->mPresenceID.space(), mParent->mPresenceID.object(), SolidAngle(mNewQueryAngle));
     }
 
 
@@ -908,7 +884,7 @@ private:
 
         float WORLD_SCALE = mParent->mInputManager->mWorldScale->as<float>();
 
-        CameraEntity *camera = mParent->mPrimaryCamera;
+        Camera *camera = mParent->mPrimaryCamera;
         if (!camera) return;
         Time now = mParent->simTime();
         Location curLoc (camera->getProxy().globalLocation(now));
@@ -945,7 +921,7 @@ private:
     }
 
 
-    
+
     void executeScript(WebView* wv, const JSArguments& args)
     {
         ScriptingUIObjectMap::iterator objit = mScriptingUIObjects.find(wv);
@@ -954,7 +930,7 @@ private:
         ProxyObjectPtr target_obj(objit->second.lock());
 
         if (!target_obj) return;
-        
+
 
         JSIter command_it;
         for (command_it = args.begin(); command_it != args.end(); ++command_it)
@@ -964,8 +940,6 @@ private:
             {
                 Sirikata::JS::Protocol::ScriptingMessage scripting_msg;
                 Sirikata::JS::Protocol::IScriptingRequest scripting_req = scripting_msg.add_requests();
-//                Protocol::ScriptingMessage  scripting_msg;
-//                Protocol::IScriptingRequest scripting_req = scripting_msg.add_requests();
                 scripting_req.set_id(0);
                 //scripting_req.set_body(String(command_it->second));
                 JSIter nexter = command_it + 1;
@@ -1002,7 +976,7 @@ private:
             init_script.SerializeToString(&serializedInitScript);
             //std::string serialized;
             //init_script.SerializeToString(&serialized);
-            
+
             obj->sendMessage(
                 Services::LISTEN_FOR_SCRIPT_BEGIN,
                 MemoryReference(serializedInitScript.data(), serializedInitScript.length())
@@ -1010,7 +984,7 @@ private:
             );
         }
     }
-    
+
 
 //     void initScriptOnSelectedObjects() {
 //         for (SelectedObjectSet::const_iterator selectIter = mSelectedObjects.begin();
@@ -1032,7 +1006,7 @@ private:
 //             body.add_message(KnownMessages::INIT_SCRIPT, serializedInitScript);
 //             std::string serialized;
 //             body.SerializeToString(&serialized);
-            
+
 //             obj->sendMessage(
 //                 Services::LISTEN_FOR_SCRIPT_BEGIN,
 //                 MemoryReference(serialized.data(), serialized.length())
@@ -1040,7 +1014,7 @@ private:
 //         }
 //     }
 
-    
+
 
     ProxyObjectPtr getTopLevelParent(ProxyObjectPtr camProxy)
     {
@@ -1052,14 +1026,25 @@ private:
     }
 
     void moveAction(Vector3f dir, float amount) {
+
+
         float WORLD_SCALE = mParent->mInputManager->mWorldScale->as<float>();
-        if (!mParent||!mParent->mPrimaryCamera) return;
-        ProxyObjectPtr cam = mParent->mPrimaryCamera->getProxyPtr();
-        if (!cam) return;
+
+
+        if (!mParent||!mParent->mPrimaryCamera)
+        {
+            return;
+        }
+
+        ProxyObjectPtr cam = mParent->mPrimaryCamera->following()->getProxyPtr();
+        if (!cam)
+        {
+            return;
+        }
 
         SpaceID space = cam->getObjectReference().space();
         ObjectReference oref = cam->getObjectReference().object();
-        
+
         // Make sure the thing we're trying to move really is the thing
         // connected to the world.
         // FIXME We should have a real "owner" VWObject, even if it is possible
@@ -1085,12 +1070,12 @@ private:
     void rotateAction(Vector3f about, float amount) {
         float WORLD_SCALE = mParent->mInputManager->mWorldScale->as<float>();
         if (!mParent||!mParent->mPrimaryCamera) return;
-        ProxyObjectPtr cam = mParent->mPrimaryCamera->getProxyPtr();
+        ProxyObjectPtr cam = mParent->mPrimaryCamera->following()->getProxyPtr();
         if (!cam) return;
 
         SpaceID space = cam->getObjectReference().space();
         ObjectReference oref = cam->getObjectReference().object();
-        
+
         // Make sure the thing we're trying to move really is the thing
         // connected to the world.
         // FIXME We should have a real "owner" VWObject, even if it is possible
@@ -1099,7 +1084,7 @@ private:
         //FIXME: these checks do not make sense any more for multi-presenced objects.
         //if (cam_vwobj->id(space) != cam->getObjectReference()) return;
         //if (cam_vwobj->getObjectReference().object() != cam->getObjectReference()) return;
-        
+
         // Get the updated position
         Time now = mParent->simTime();
         Location loc = cam->extrapolateLocation(now);
@@ -1116,12 +1101,12 @@ private:
 
         float WORLD_SCALE = mParent->mInputManager->mWorldScale->as<float>();
         if (!mParent||!mParent->mPrimaryCamera) return;
-        ProxyObjectPtr cam = mParent->mPrimaryCamera->getProxyPtr();
+        ProxyObjectPtr cam = mParent->mPrimaryCamera->following()->getProxyPtr();
         if (!cam) return;
 
         SpaceID space = cam->getObjectReference().space();
         ObjectReference oref = cam->getObjectReference().object();
-        
+
         // Make sure the thing we're trying to move really is the thing
         // connected to the world.
         // FIXME We should have a real "owner" VWObject, even if it is possible
@@ -1130,7 +1115,7 @@ private:
         //FIXME: these checks do not make sense any more for multi-presenced objects.
         //if (cam_vwobj->id(space) != cam->getObjectReference()) return;
         //if (cam_vwobj->getObjectReference() != cam->getObjectReference()) return;
-        
+
         // Get the updated position
         Time now = mParent->simTime();
         Location loc = cam->extrapolateLocation(now);
@@ -1189,33 +1174,6 @@ private:
         mParent->mInputManager->filesDropped(files);
     }
 
-    void saveSceneAction() {
-        std::set<std::string> saveSceneNames;
-        std::cout << "saving new scene as scene_new.csv: " << std::endl;
-        FILE *output = fopen("scene_new.csv", "wt");
-        if (!output) {
-            perror("Failed to open scene_new.csv");
-            return;
-        }
-        fprintf(output, "objtype,subtype,name,parent,script,scriptparams,");
-        fprintf(output, "pos_x,pos_y,pos_z,orient_x,orient_y,orient_z,orient_w,");
-        fprintf(output, "vel_x,vel_y,vel_z,rot_axis_x,rot_axis_y,rot_axis_z,rot_speed,");
-        fprintf(output, "scale_x,scale_y,scale_z,hull_x,hull_y,hull_z,");
-        fprintf(output, "density,friction,bounce,colMask,colMsg,meshURI,diffuse_x,diffuse_y,diffuse_z,ambient,");
-        fprintf(output, "specular_x,specular_y,specular_z,shadowpower,");
-        fprintf(output, "range,constantfall,linearfall,quadfall,cone_in,cone_out,power,cone_fall,shadow\n");
-        OgreSystem::SceneEntitiesMap::const_iterator iter;
-        vector<Entity*> entlist;
-        entlist.clear();
-        for (iter = mParent->mSceneEntities.begin(); iter != mParent->mSceneEntities.end(); ++iter) {
-            entlist.push_back(iter->second);
-        }
-        std::sort(entlist.begin(), entlist.end(), compareEntity);
-        for (unsigned int i=0; i<entlist.size(); i++)
-            dumpObject(output, entlist[i], saveSceneNames);
-        fclose(output);
-    }
-
     bool quat2Euler(Quaternion q, double& pitch, double& roll, double& yaw) {
         /// note that in the 'gymbal lock' situation, we will get nan's for pitch.
         /// for now, in that case we should revert to quaternion
@@ -1236,109 +1194,9 @@ private:
         return true;
     }
 
-    string physicalName(ProxyMeshObject *obj, std::set<std::string> &saveSceneNames) {
-        std::string name = obj->getPhysical().name;
-        if (name.empty()) {
-            name = obj->getMesh().filename();
-            name.resize(name.size()-5);
-            //name += ".0";
-        }
-//        if (name.find(".") < name.size()) {             /// remove any enumeration
-//            name.resize(name.find("."));
-//        }
-        int basesize = name.size();
-        int count = 1;
-        while (saveSceneNames.count(name)) {
-            name.resize(basesize);
-            std::ostringstream os;
-            os << name << "." << count;
-            name = os.str();
-            count++;
-        }
-        saveSceneNames.insert(name);
-        return name;
-    }
-    void dumpObject(FILE* fp, Entity* e, std::set<std::string> &saveSceneNames) {
-        ProxyObject *pp = e->getProxyPtr().get();
-        Time now = mParent->simTime();
-        Location loc = pp->globalLocation(now);
-        ProxyCameraObject* camera = dynamic_cast<ProxyCameraObject*>(pp);
-        ProxyMeshObject* mesh = dynamic_cast<ProxyMeshObject*>(pp);
 
-        double x,y,z;
-        std::string w("");
-        /// if feasible, use Eulers: (not feasible == potential gymbal confusion)
-        if (!quat2Euler(loc.getOrientation(), x, z, y)) {
-            x=loc.getOrientation().x;
-            y=loc.getOrientation().y;
-            z=loc.getOrientation().z;
-            std::stringstream temp;
-            temp << loc.getOrientation().w;
-            w = temp.str();
-        }
-
-        Vector3f angAxis(loc.getAxisOfRotation());
-        float angSpeed(loc.getAngularSpeed());
-
-        string parent;
-        ProxyObjectPtr parentObj = pp->getParentProxy();
-        if (parentObj) {
-            ProxyMeshObject *parentMesh = dynamic_cast<ProxyMeshObject*>(parentObj.get());
-            if (parentMesh) {
-                parent = physicalName(parentMesh, saveSceneNames);
-            }
-        }
-        else if (mesh) {
-            URI uri = mesh->getMesh();
-            std::string uristr = uri.toString();
-            if (uri.proto().empty()) {
-                uristr = "";
-            }
-            const PhysicalParameters &phys = mesh->getPhysical();
-            std::string subtype;
-            switch (phys.mode) {
-            case PhysicalParameters::Disabled:
-                subtype="graphiconly";
-                break;
-            case PhysicalParameters::Static:
-                subtype="staticmesh";
-                break;
-            case PhysicalParameters::DynamicBox:
-                subtype="dynamicbox";
-                break;
-            case PhysicalParameters::DynamicSphere:
-                subtype="dynamicsphere";
-                break;
-            case PhysicalParameters::DynamicCylinder:
-                subtype="dynamiccylinder";
-                break;
-            case PhysicalParameters::Character:
-                subtype="character";
-                break;
-            default:
-                std::cout << "unknown physical mode! " << (int)phys.mode << std::endl;
-            }
-            std::string name = physicalName(mesh, saveSceneNames);
-            fprintf(fp, "mesh,%s,%s,%s,,,%f,%f,%f,%f,%f,%f,%s,%f,%f,%f,%f,%f,%f,%f,",subtype.c_str(),name.c_str(),parent.c_str(),
-                    loc.getPosition().x,loc.getPosition().y,loc.getPosition().z,x,y,z,w.c_str(),
-                    loc.getVelocity().x, loc.getVelocity().y, loc.getVelocity().z, angAxis.x, angAxis.y, angAxis.z, angSpeed);
-
-            fprintf(fp, "%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%s\n",
-                    mesh->getScale().x,mesh->getScale().y,mesh->getScale().z,
-                    phys.hull.x, phys.hull.y, phys.hull.z,
-                    phys.density, phys.friction, phys.bounce, phys.colMask, phys.colMsg, uristr.c_str());
-        }
-        else if (camera) {
-            fprintf(fp, "camera,,,%s,,,%f,%f,%f,%f,%f,%f,%s,%f,%f,%f,%f,%f,%f,%f\n",parent.c_str(),
-                    loc.getPosition().x,loc.getPosition().y,loc.getPosition().z,x,y,z,w.c_str(),
-                    loc.getVelocity().x, loc.getVelocity().y, loc.getVelocity().z, angAxis.x, angAxis.y, angAxis.z, angSpeed);
-        }
-        else {
-            fprintf(fp, "#unknown object type in dumpObject\n");
-        }
-    }
-
-    void zoomAction(float value, Vector2f axes) {
+    void zoomAction(float value, Vector2f axes)
+    {
         if (!mParent||!mParent->mPrimaryCamera) return;
         zoomInOut(value, axes, mParent->mPrimaryCamera, mSelectedObjects, mParent);
     }
@@ -1420,7 +1278,7 @@ private:
         mInputBinding.handle(inputev);
 
         if (mParent->mPrimaryCamera) {
-            CameraEntity *camera = mParent->mPrimaryCamera;
+            Camera *camera = mParent->mPrimaryCamera;
             Time time = mParent->simTime();
             int lhc=mLastHitCount;
             mouseOverWebView(camera, time, mouseev->mX, mouseev->mY, false, false);
@@ -1443,7 +1301,7 @@ private:
         }
 
         if (mParent->mPrimaryCamera) {
-            CameraEntity *camera = mParent->mPrimaryCamera;
+            Camera *camera = mParent->mPrimaryCamera;
             Time time = mParent->simTime();
             int lhc=mLastHitCount;
             hoverEntity(camera, time, mouseev->mXStart, mouseev->mYStart, true, &lhc, mWhichRayObject);
@@ -1471,7 +1329,7 @@ private:
             return EventResponse::cancel();
         }
         if (mParent->mPrimaryCamera) {
-            CameraEntity *camera = mParent->mPrimaryCamera;
+            Camera *camera = mParent->mPrimaryCamera;
             Time time = mParent->simTime();
             int lhc=mLastHitCount;
             mouseOverWebView(camera, time, mouseev->mX, mouseev->mY, false, true);
@@ -1480,7 +1338,7 @@ private:
 
         InputEventPtr inputev (std::tr1::dynamic_pointer_cast<InputEvent>(ev));
         mInputBinding.handle(inputev);
-        
+
         return EventResponse::nop();
     }
 
@@ -1505,7 +1363,7 @@ private:
         }
 
         if (mParent->mPrimaryCamera) {
-            CameraEntity *camera = mParent->mPrimaryCamera;
+            Camera *camera = mParent->mPrimaryCamera;
             Time time = mParent->simTime();
             int lhc=mLastHitCount;
             mouseOverWebView(camera, time, ev->mX, ev->mY, false, ev->mType == Input::DRAG_END);
@@ -1560,7 +1418,7 @@ private:
     /// Camera Path Utilities
     void cameraPathSetCamera(const Vector3d& pos, const Quaternion& orient) {
         if (!mParent||!mParent->mPrimaryCamera) return;
-        ProxyObjectPtr cam = getTopLevelParent(mParent->mPrimaryCamera->getProxyPtr());
+        ProxyObjectPtr cam = getTopLevelParent(mParent->mPrimaryCamera->following()->getProxyPtr());
         if (!cam) return;
         Time now = mParent->simTime();
         Location loc = cam->extrapolateLocation(now);
@@ -1613,7 +1471,7 @@ private:
 
     void cameraPathInsert() {
         if (!mParent||!mParent->mPrimaryCamera) return;
-        ProxyObjectPtr cam = getTopLevelParent(mParent->mPrimaryCamera->getProxyPtr());
+        ProxyObjectPtr cam = getTopLevelParent(mParent->mPrimaryCamera->following()->getProxyPtr());
         if (!cam) return;
         Time now = mParent->simTime();
         Location loc = cam->extrapolateLocation(now);
@@ -1698,7 +1556,7 @@ private:
             if (!!(std::tr1::dynamic_pointer_cast<SDLMouse>(ev->mDevice))) {
                 SubscriptionId subId = mParent->mInputManager->subscribeId(
                     AxisEvent::getEventId(),
-                    std::tr1::bind(&MouseHandler::axisHandler, this, _1));
+                    std::tr1::bind(&OgreSystemMouseHandler::axisHandler, this, _1));
                 mEvents.push_back(subId);
                 mDeviceSubscriptions.insert(DeviceSubMap::value_type(&*ev->mDevice, subId));
             }
@@ -1707,7 +1565,7 @@ private:
                 {
                     SubscriptionId subId = mParent->mInputManager->subscribeId(
                         ButtonPressed::getEventId(),
-                        std::tr1::bind(&MouseHandler::keyHandler, this, _1)
+                        std::tr1::bind(&OgreSystemMouseHandler::keyHandler, this, _1)
                     );
                     mEvents.push_back(subId);
                     mDeviceSubscriptions.insert(DeviceSubMap::value_type(&*ev->mDevice, subId));
@@ -1716,7 +1574,7 @@ private:
                 {
                     SubscriptionId subId = mParent->mInputManager->subscribeId(
                         ButtonReleased::getEventId(),
-                        std::tr1::bind(&MouseHandler::keyHandler, this, _1)
+                        std::tr1::bind(&OgreSystemMouseHandler::keyHandler, this, _1)
                     );
                     mEvents.push_back(subId);
                     mDeviceSubscriptions.insert(DeviceSubMap::value_type(&*ev->mDevice, subId));
@@ -1736,7 +1594,7 @@ private:
     }
 
 public:
-    MouseHandler(OgreSystem *parent)
+    OgreSystemMouseHandler(OgreSystem *parent, const String& bindings_file)
      : mParent(parent),
        mScreenshotID(0),
        mPeriodicScreenshot(false),
@@ -1749,7 +1607,7 @@ public:
        mUIWidgetView(NULL),
        mQueryAngleWidgetView(NULL),
        mNewQueryAngle(0.f),
-       mQueryAngleTimer( Network::IOTimer::create(parent->mContext->ioService, std::tr1::bind(&MouseHandler::handleSetQueryAngleTimeout, this)) ),
+       mQueryAngleTimer( Network::IOTimer::create(parent->mContext->ioService, std::tr1::bind(&OgreSystemMouseHandler::handleSetQueryAngleTimeout, this)) ),
        mWhichRayObject(0)
     {
         mLastHitCount=0;
@@ -1762,7 +1620,7 @@ public:
         mCameraPathTime = mCameraPath.keyFrameTime(0);
 
         mEvents.push_back(mParent->mInputManager->registerDeviceListener(
-                              std::tr1::bind(&MouseHandler::deviceListener, this, _1)));
+                              std::tr1::bind(&OgreSystemMouseHandler::deviceListener, this, _1)));
 
         mDragAction[1] = 0;
         mDragAction[2] = DragActionRegistry::get("zoomCamera");
@@ -1771,173 +1629,108 @@ public:
 
         mEvents.push_back(mParent->mInputManager->subscribeId(
                 MouseHoverEvent::getEventId(),
-                std::tr1::bind(&MouseHandler::mouseHoverHandler, this, _1)));
+                std::tr1::bind(&OgreSystemMouseHandler::mouseHoverHandler, this, _1)));
 
         mEvents.push_back(mParent->mInputManager->subscribeId(
                 MousePressedEvent::getEventId(),
-                std::tr1::bind(&MouseHandler::mousePressedHandler, this, _1)));
+                std::tr1::bind(&OgreSystemMouseHandler::mousePressedHandler, this, _1)));
 
         mEvents.push_back(mParent->mInputManager->subscribeId(
                 MouseDragEvent::getEventId(),
-                std::tr1::bind(&MouseHandler::mouseDragHandler, this, _1)));
+                std::tr1::bind(&OgreSystemMouseHandler::mouseDragHandler, this, _1)));
 
         mEvents.push_back(mParent->mInputManager->subscribeId(
                 MouseClickEvent::getEventId(),
-                std::tr1::bind(&MouseHandler::mouseClickHandler, this, _1)));
+                std::tr1::bind(&OgreSystemMouseHandler::mouseClickHandler, this, _1)));
 
         mEvents.push_back(mParent->mInputManager->subscribeId(
                 TextInputEvent::getEventId(),
-                std::tr1::bind(&MouseHandler::textInputHandler, this, _1)));
+                std::tr1::bind(&OgreSystemMouseHandler::textInputHandler, this, _1)));
 
         mEvents.push_back(mParent->mInputManager->subscribeId(
                 WebViewEvent::getEventId(),
-                std::tr1::bind(&MouseHandler::webviewHandler, this, _1)));
+                std::tr1::bind(&OgreSystemMouseHandler::webviewHandler, this, _1)));
 
-        mInputResponses["screenshot"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::screenshotAction, this));
-        mInputResponses["togglePeriodicScreenshot"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::togglePeriodicScreenshotAction, this));
-        mInputResponses["suspend"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::suspendAction, this));
-        mInputResponses["quit"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::quitAction, this));
+        mInputResponses["screenshot"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::screenshotAction, this));
+        mInputResponses["togglePeriodicScreenshot"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::togglePeriodicScreenshotAction, this));
+        mInputResponses["suspend"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::suspendAction, this));
+        mInputResponses["quit"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::quitAction, this));
 
-        mInputResponses["moveForward"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::moveAction, this, Vector3f(0, 0, -1), _1), 1, 0);
-        mInputResponses["moveBackward"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::moveAction, this, Vector3f(0, 0, 1), _1), 1, 0);
-        mInputResponses["moveLeft"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::moveAction, this, Vector3f(-1, 0, 0), _1), 1, 0);
-        mInputResponses["moveRight"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::moveAction, this, Vector3f(1, 0, 0), _1), 1, 0);
-        mInputResponses["moveDown"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::moveAction, this, Vector3f(0, -1, 0), _1), 1, 0);
-        mInputResponses["moveUp"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::moveAction, this, Vector3f(0, 1, 0), _1), 1, 0);
+        mInputResponses["moveForward"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::moveAction, this, Vector3f(0, 0, -1), _1), 1, 0);
+        mInputResponses["moveBackward"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::moveAction, this, Vector3f(0, 0, 1), _1), 1, 0);
+        mInputResponses["moveLeft"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::moveAction, this, Vector3f(-1, 0, 0), _1), 1, 0);
+        mInputResponses["moveRight"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::moveAction, this, Vector3f(1, 0, 0), _1), 1, 0);
+        mInputResponses["moveDown"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::moveAction, this, Vector3f(0, -1, 0), _1), 1, 0);
+        mInputResponses["moveUp"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::moveAction, this, Vector3f(0, 1, 0), _1), 1, 0);
 
-        mInputResponses["rotateXPos"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::rotateAction, this, Vector3f(1, 0, 0), _1), 1, 0);
-        mInputResponses["rotateXNeg"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::rotateAction, this, Vector3f(-1, 0, 0), _1), 1, 0);
-        mInputResponses["rotateYPos"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::rotateAction, this, Vector3f(0, 1, 0), _1), 1, 0);
-        mInputResponses["rotateYNeg"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::rotateAction, this, Vector3f(0, -1, 0), _1), 1, 0);
-        mInputResponses["rotateZPos"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::rotateAction, this, Vector3f(0, 0, 1), _1), 1, 0);
-        mInputResponses["rotateZNeg"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::rotateAction, this, Vector3f(0, 0, -1), _1), 1, 0);
+        mInputResponses["rotateXPos"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::rotateAction, this, Vector3f(1, 0, 0), _1), 1, 0);
+        mInputResponses["rotateXNeg"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::rotateAction, this, Vector3f(-1, 0, 0), _1), 1, 0);
+        mInputResponses["rotateYPos"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::rotateAction, this, Vector3f(0, 1, 0), _1), 1, 0);
+        mInputResponses["rotateYNeg"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::rotateAction, this, Vector3f(0, -1, 0), _1), 1, 0);
+        mInputResponses["rotateZPos"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::rotateAction, this, Vector3f(0, 0, 1), _1), 1, 0);
+        mInputResponses["rotateZNeg"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::rotateAction, this, Vector3f(0, 0, -1), _1), 1, 0);
 
-        mInputResponses["stableRotatePos"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::stableRotateAction, this, 1.f, _1), 1, 0);
-        mInputResponses["stableRotateNeg"] = new FloatToggleInputResponse(std::tr1::bind(&MouseHandler::stableRotateAction, this, -1.f, _1), 1, 0);
+        mInputResponses["stableRotatePos"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::stableRotateAction, this, 1.f, _1), 1, 0);
+        mInputResponses["stableRotateNeg"] = new FloatToggleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::stableRotateAction, this, -1.f, _1), 1, 0);
 
-        mInputResponses["createWebview"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::createWebviewAction, this));
-
-
-        mInputResponses["openScriptingUI"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::createScriptingUIAction, this));
-        mInputResponses["openObjectUI"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::createUIAction, this, "object/object.html"));
+        mInputResponses["createWebview"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::createWebviewAction, this));
 
 
-        mInputResponses["createScriptedObject"] = new StringMapInputResponse(std::tr1::bind(&MouseHandler::createScriptedObjectAction, this, _1));
+        mInputResponses["openScriptingUI"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::createScriptingUIAction, this));
+        mInputResponses["openObjectUI"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::createUIAction, this, "object/object.html"));
+
+
+        mInputResponses["createScriptedObject"] = new StringMapInputResponse(std::tr1::bind(&OgreSystemMouseHandler::createScriptedObjectAction, this, _1));
         //lkjs;
-        //mInputResponses["executeScript"] = new WebViewStringMapInputResponse(std::tr1::bind(&MouseHandler::executeScript, this, _1, _2));
+        //mInputResponses["executeScript"] = new WebViewStringMapInputResponse(std::tr1::bind(&OgreSystemMouseHandler::executeScript, this, _1, _2));
 
-        mInputResponses["enterObject"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::enterObjectAction, this));
-        mInputResponses["leaveObject"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::leaveObjectAction, this));
-        mInputResponses["groupObjects"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::groupObjectsAction, this));
-        mInputResponses["ungroupObjects"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::ungroupObjectsAction, this));
-        mInputResponses["deleteObjects"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::deleteObjectsAction, this));
-        mInputResponses["cloneObjects"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cloneObjectsAction, this));
-        mInputResponses["import"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::importAction, this));
-        mInputResponses["saveScene"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::saveSceneAction, this));
+        mInputResponses["enterObject"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::enterObjectAction, this));
+        mInputResponses["leaveObject"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::leaveObjectAction, this));
+        mInputResponses["groupObjects"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::groupObjectsAction, this));
+        mInputResponses["ungroupObjects"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::ungroupObjectsAction, this));
+        mInputResponses["deleteObjects"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::deleteObjectsAction, this));
+        mInputResponses["cloneObjects"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cloneObjectsAction, this));
+        mInputResponses["import"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::importAction, this));
 
-        mInputResponses["selectObject"] = new Vector2fInputResponse(std::tr1::bind(&MouseHandler::selectObjectAction, this, _1, 1));
-        mInputResponses["selectObjectReverse"] = new Vector2fInputResponse(std::tr1::bind(&MouseHandler::selectObjectAction, this, _1, -1));
+        mInputResponses["selectObject"] = new Vector2fInputResponse(std::tr1::bind(&OgreSystemMouseHandler::selectObjectAction, this, _1, 1));
+        mInputResponses["selectObjectReverse"] = new Vector2fInputResponse(std::tr1::bind(&OgreSystemMouseHandler::selectObjectAction, this, _1, -1));
 
-        mInputResponses["zoom"] = new AxisInputResponse(std::tr1::bind(&MouseHandler::zoomAction, this, _1, _2));
+        mInputResponses["zoom"] = new AxisInputResponse(std::tr1::bind(&OgreSystemMouseHandler::zoomAction, this, _1, _2));
 
-        mInputResponses["setDragModeNone"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::setDragModeAction, this, ""));
-        mInputResponses["setDragModeMoveObject"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::setDragModeAction, this, "moveObject"));
-        mInputResponses["setDragModeRotateObject"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::setDragModeAction, this, "rotateObject"));
-        mInputResponses["setDragModeScaleObject"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::setDragModeAction, this, "scaleObject"));
-        mInputResponses["setDragModeRotateCamera"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::setDragModeAction, this, "rotateCamera"));
-        mInputResponses["setDragModePanCamera"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::setDragModeAction, this, "panCamera"));
+        mInputResponses["setDragModeNone"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::setDragModeAction, this, ""));
+        mInputResponses["setDragModeMoveObject"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::setDragModeAction, this, "moveObject"));
+        mInputResponses["setDragModeRotateObject"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::setDragModeAction, this, "rotateObject"));
+        mInputResponses["setDragModeScaleObject"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::setDragModeAction, this, "scaleObject"));
+        mInputResponses["setDragModeRotateCamera"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::setDragModeAction, this, "rotateCamera"));
+        mInputResponses["setDragModePanCamera"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::setDragModeAction, this, "panCamera"));
 
-        mInputResponses["cameraPathLoad"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathLoad, this));
-        mInputResponses["cameraPathSave"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathSave, this));
-        mInputResponses["cameraPathNextKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathNext, this));
-        mInputResponses["cameraPathPreviousKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathPrevious, this));
-        mInputResponses["cameraPathInsertKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathInsert, this));
-        mInputResponses["cameraPathDeleteKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathDelete, this));
-        mInputResponses["cameraPathRun"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathRun, this));
-        mInputResponses["cameraPathSpeedUp"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathChangeSpeed, this, -0.1f));
-        mInputResponses["cameraPathSlowDown"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::cameraPathChangeSpeed, this, 0.1f));
+        mInputResponses["cameraPathLoad"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathLoad, this));
+        mInputResponses["cameraPathSave"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathSave, this));
+        mInputResponses["cameraPathNextKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathNext, this));
+        mInputResponses["cameraPathPreviousKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathPrevious, this));
+        mInputResponses["cameraPathInsertKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathInsert, this));
+        mInputResponses["cameraPathDeleteKeyFrame"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathDelete, this));
+        mInputResponses["cameraPathRun"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathRun, this));
+        mInputResponses["cameraPathSpeedUp"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathChangeSpeed, this, -0.1f));
+        mInputResponses["cameraPathSlowDown"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::cameraPathChangeSpeed, this, 0.1f));
 
-        mInputResponses["webNewTab"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateAction, this, WebViewManager::NavigateNewTab));
-        mInputResponses["webBack"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateAction, this, WebViewManager::NavigateBack));
-        mInputResponses["webForward"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateAction, this, WebViewManager::NavigateForward));
-        mInputResponses["webRefresh"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateAction, this, WebViewManager::NavigateRefresh));
-        mInputResponses["webHome"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateAction, this, WebViewManager::NavigateHome));
-        mInputResponses["webGo"] = new StringInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateStringAction, this, WebViewManager::NavigateGo, _1));
-        mInputResponses["webDelete"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateAction, this, WebViewManager::NavigateDelete));
+        mInputResponses["webNewTab"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateAction, this, WebViewManager::NavigateNewTab));
+        mInputResponses["webBack"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateAction, this, WebViewManager::NavigateBack));
+        mInputResponses["webForward"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateAction, this, WebViewManager::NavigateForward));
+        mInputResponses["webRefresh"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateAction, this, WebViewManager::NavigateRefresh));
+        mInputResponses["webHome"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateAction, this, WebViewManager::NavigateHome));
+        mInputResponses["webGo"] = new StringInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateStringAction, this, WebViewManager::NavigateGo, _1));
+        mInputResponses["webDelete"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateAction, this, WebViewManager::NavigateDelete));
 
-        mInputResponses["webCommand"] = new StringInputResponse(std::tr1::bind(&MouseHandler::webViewNavigateStringAction, this, WebViewManager::NavigateCommand, _1));
-
-
-        mInputResponses["startUploadObject"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::startUploadObject, this));
-        mInputResponses["handleQueryAngleWidget"] = new SimpleInputResponse(std::tr1::bind(&MouseHandler::handleQueryAngleWidget, this));
+        mInputResponses["webCommand"] = new StringInputResponse(std::tr1::bind(&OgreSystemMouseHandler::webViewNavigateStringAction, this, WebViewManager::NavigateCommand, _1));
 
 
-        // Session
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_M), mInputResponses["suspend"]);
+        mInputResponses["startUploadObject"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::startUploadObject, this));
+        mInputResponses["handleQueryAngleWidget"] = new SimpleInputResponse(std::tr1::bind(&OgreSystemMouseHandler::handleQueryAngleWidget, this));
 
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_ESCAPE), mInputResponses["quit"]);
-
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_I), mInputResponses["screenshot"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_I, Input::MOD_CTRL), mInputResponses["togglePeriodicScreenshot"]);
-
-        // Movement
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_W), mInputResponses["moveForward"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_S), mInputResponses["moveBackward"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_D), mInputResponses["moveRight"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_A), mInputResponses["moveLeft"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_UP, Input::MOD_SHIFT), mInputResponses["rotateXPos"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_DOWN, Input::MOD_SHIFT), mInputResponses["rotateXNeg"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_UP), mInputResponses["moveForward"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_DOWN), mInputResponses["moveBackward"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_Q), mInputResponses["moveUp"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_Z), mInputResponses["moveDown"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_LEFT), mInputResponses["stableRotatePos"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_RIGHT), mInputResponses["stableRotateNeg"]);
-
-        // Various other actions
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_N, Input::MOD_CTRL), mInputResponses["createWebview"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_N, Input::MOD_ALT), mInputResponses["openObjectUI"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_S, Input::MOD_ALT), mInputResponses["openScriptingUI"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_KP_ENTER), mInputResponses["enterObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_RETURN), mInputResponses["enterObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_KP_0), mInputResponses["leaveObject"]);
-        //mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_ESCAPE), mInputResponses["leaveObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_G), mInputResponses["groupObjects"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_G, Input::MOD_ALT), mInputResponses["ungroupObjects"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_DELETE), mInputResponses["deleteObjects"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_V, Input::MOD_CTRL), mInputResponses["cloneObjects"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_O, Input::MOD_CTRL), mInputResponses["import"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_S, Input::MOD_CTRL), mInputResponses["saveScene"]);
-
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_U, Input::MOD_CTRL), mInputResponses["startUploadObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_A, Input::MOD_CTRL), mInputResponses["handleQueryAngleWidget"]);
-
-
-        // Drag modes
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_Q, Input::MOD_CTRL), mInputResponses["setDragModeNone"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_W, Input::MOD_CTRL), mInputResponses["setDragModeMoveObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_E, Input::MOD_CTRL), mInputResponses["setDragModeRotateObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_R, Input::MOD_CTRL), mInputResponses["setDragModeScaleObject"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_T, Input::MOD_CTRL), mInputResponses["setDragModeRotateCamera"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_Y, Input::MOD_CTRL), mInputResponses["setDragModePanCamera"]);
-
-        // Mouse Zooming
-        mInputBinding.add(InputBindingEvent::Axis(SDLMouse::WHEELY), mInputResponses["zoom"]);
-
-        // Selection
-        mInputBinding.add(InputBindingEvent::MouseClick(1), mInputResponses["selectObject"]);
-        mInputBinding.add(InputBindingEvent::MouseClick(3), mInputResponses["selectObjectReverse"]);
-
-        // Camera Path
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_1), mInputResponses["cameraPathLoad"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_2), mInputResponses["cameraPathSave"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_3), mInputResponses["cameraPathNextKeyFrame"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_4), mInputResponses["cameraPathPreviousKeyFrame"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_5), mInputResponses["cameraPathInsertKeyFrame"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_6), mInputResponses["cameraPathDeleteKeyFrame"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_7), mInputResponses["cameraPathRun"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_8), mInputResponses["cameraPathSpeedUp"]);
-        mInputBinding.add(InputBindingEvent::Key(SDL_SCANCODE_9), mInputResponses["cameraPathSlowDown"]);
+        boost::filesystem::path resources_dir = mParent->getResourcesDir();
+        String keybinding_file = (resources_dir / bindings_file).string();
+        mInputBinding.addFromFile(keybinding_file, mInputResponses);
 
         // WebView Chrome
         mInputBinding.add(InputBindingEvent::Web("__chrome", "navnewtab"), mInputResponses["webNewTab"]);
@@ -1958,7 +1751,7 @@ public:
 
     }
 
-    ~MouseHandler() {
+    ~OgreSystemMouseHandler() {
 
         if(mUploadWebView) {
             WebViewManager::getSingleton().destroyWebView(mUploadWebView);
@@ -1974,7 +1767,7 @@ public:
              ++iter) {
             mParent->mInputManager->unsubscribe(*iter);
         }
-        for (InputResponseMap::iterator iter=mInputResponses.begin(),iterend=mInputResponses.end();iter!=iterend;++iter) {
+        for (InputBinding::InputResponseMap::iterator iter=mInputResponses.begin(),iterend=mInputResponses.end();iter!=iterend;++iter) {
             delete iter->second;
         }
         for (std::map<int, ActiveDrag*>::iterator iter=mActiveDrag.begin(),iterend=mActiveDrag.end();iter!=iterend;++iter) {
@@ -1982,6 +1775,13 @@ public:
                 delete iter->second;
         }
     }
+
+    void alert(const String& title, const String& text) {
+        if (!mUIWidgetView) return;
+
+        mUIWidgetView->evaluateJS("alert_permanent('" + title + "', '" + text + "');");
+    }
+
     void setParentGroupAndClear(const SpaceObjectReference &id) {
         clearSelection();
         mCurrentGroup = id;
@@ -1993,11 +1793,33 @@ public:
         mSelectedObjects.insert(obj);
     }
 
-    
+    void onUIDirectoryListingFinished(String initial_path,
+            std::tr1::shared_ptr<Transfer::DiskManager::ScanRequest::DirectoryListing> dirListing) {
+        std::ostringstream os;
+        os << "directory_list_request({path:'" << initial_path << "', results:[";
+        if(dirListing) {
+            bool needComma = false;
+            for(Transfer::DiskManager::ScanRequest::DirectoryListing::iterator it =
+                    dirListing->begin(); it != dirListing->end(); it++) {
+                if(needComma) {
+                    os << ",";
+                } else {
+                    needComma = true;
+                }
+                os << "{path:'" << it->mPath.filename() << "', directory:" <<
+                        (it->mFileStatus.type() == Transfer::Filesystem::boost_fs::directory_file ?
+                        "true" : "false") << "}";
+            }
+        }
+        os << "]});";
+        printf("Calling to JS: %s\n", os.str().c_str());
+        mUIWidgetView->evaluateJS(os.str());
+    }
+
     void onUIAction(WebView* webview, const JSArguments& args) {
         printf("ui action event fired arg length = %d\n", (int)args.size());
-        if (args.size() != 1) {
-            printf("expected 1 argument, returning.\n");
+        if (args.size() < 1) {
+            printf("expected at least 1 argument, returning.\n");
             return;
         }
 
@@ -2007,6 +1829,16 @@ public:
 
         if(action_triggered == "action_exit") {
             quitAction();
+        } else if(action_triggered == "action_directory_list_request") {
+            if(args.size() != 2) {
+                printf("expected 2 arguments, returning.\n");
+                return;
+            }
+            String pathRequested(args[1].data());
+            std::tr1::shared_ptr<Transfer::DiskManager::DiskRequest> scan_req(
+                    new Transfer::DiskManager::ScanRequest(pathRequested,
+                    std::tr1::bind(&OgreSystemMouseHandler::onUIDirectoryListingFinished, this, pathRequested, _1)));
+            Transfer::DiskManager::getSingleton().addRequest(scan_req);
         }
     }
 
@@ -2019,15 +1851,15 @@ public:
             mUIWidgetView = WebViewManager::getSingleton().createWebView("ui_widget","ui_widget",
                     mParent->getRenderTarget()->getWidth(), mParent->getRenderTarget()->getHeight(),
                     OverlayPosition(RP_TOPLEFT), false, 70, TIER_BACK, 0, WebView::WebViewBorderSize(0,0,0,0));
-            mUIWidgetView->bind("ui-action", std::tr1::bind(&MouseHandler::onUIAction, this, _1, _2));
+            mUIWidgetView->bind("ui-action", std::tr1::bind(&OgreSystemMouseHandler::onUIAction, this, _1, _2));
             mUIWidgetView->loadFile("chrome/ui.html");
             mUIWidgetView->setTransparent(true);
         }
     }
 };
 
-void OgreSystem::allocMouseHandler() {
-    mMouseHandler = new MouseHandler(this);
+void OgreSystem::allocMouseHandler(const String& keybindings_file) {
+    mMouseHandler = new OgreSystemMouseHandler(this, keybindings_file);
 }
 void OgreSystem::destroyMouseHandler() {
     if (mMouseHandler) {

@@ -39,6 +39,9 @@
 #include <sirikata/oh/ObjectScript.hpp>
 #include <sirikata/oh/ObjectScriptManager.hpp>
 #include <sirikata/oh/HostedObject.hpp>
+#include <sirikata/proxyobject/SessionEventListener.hpp>
+
+#include <boost/filesystem.hpp>
 
 #include <v8.h>
 
@@ -46,25 +49,33 @@
 #include "JSEventHandler.hpp"
 #include "JSObjectScriptManager.hpp"
 #include "JSPresenceStruct.hpp"
+#include <sirikata/proxyobject/ProxyCreationListener.hpp>
 
 
 namespace Sirikata {
 namespace JS {
 
-class JSObjectScript : public ObjectScript {
+
+class JSObjectScript : public ObjectScript,
+                       public SessionEventListener,
+                       public ProxyCreationListener
+{
+
 public:
-    //JSObjectScript(HostedObjectPtr ho, const ObjectScriptManager::Arguments&
-    //args, v8::Persistent<v8::ObjectTemplate>& global_template,
-    //v8::Persistent<v8::ObjectTemplate>& oref_template);
-    JSObjectScript(HostedObjectPtr ho, const ObjectScriptManager::Arguments& args, JSObjectScriptManager* jMan);
+    JSObjectScript(HostedObjectPtr ho, const String& args, JSObjectScriptManager* jMan);
     virtual ~JSObjectScript();
+
+    // SessionEventListener Interface
+    virtual void onConnected(SessionEventProviderPtr from, const SpaceObjectReference& name);
+    virtual void onDisconnected(SessionEventProviderPtr from, const SpaceObjectReference& name);
+
 
     void processMessage(const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference bodyData);
     virtual void updateAddressable();
 
-
-    virtual void attachScript(const String&);
-
+    virtual void onCreateProxy(ProxyObjectPtr p);
+    virtual void onDestroyProxy(ProxyObjectPtr p);
+    
     /** Returns true if this script is valid, i.e. if it was successfully loaded
      *  and initialized.
      */
@@ -72,8 +83,8 @@ public:
 
     /** Dummy callback for testing exposing new functionality to scripts. */
     void test() const;
-    void bftm_testSendMessageBroadcast(const std::string& msgToBCast) const;
-    void bftm_debugPrintString(std::string cStrMsgBody) const;
+    void testSendMessageBroadcast(const std::string& msgToBCast) const;
+    void debugPrintString(std::string cStrMsgBody) const;
     void sendMessageToEntity(SpaceObjectReference* reffer, const std::string& msgBody) const;
     void sendMessageToEntity(int numIndex, const std::string& msgBody) const;
     int  getAddressableSize();
@@ -111,26 +122,30 @@ public:
     v8::Handle<v8::Value> getOrientationFunction(const SpaceObjectReference* sporef);
 
     v8::Handle<v8::Value> getVisualScaleFunction(const SpaceObjectReference* sporef);
-    void setVisualScaleFunction(const SpaceObjectReference* sporef, v8::Local<v8::Value>& newvis);
+    void setVisualScaleFunction(const SpaceObjectReference* sporef, float newScale);
 
     v8::Handle<v8::Value> getOrientationVelFunction(const SpaceObjectReference* sporef);
     void setOrientationVelFunction(const SpaceObjectReference* sporef, const Quaternion& quat);
 
+    void setQueryAngleFunction(const SpaceObjectReference* sporef, const SolidAngle& sa);
 
-    v8::Handle<v8::Value> getAxisOfRotation();
-    void setAxisOfRotation(v8::Local<v8::Value>& newval);
-    v8::Handle<v8::Value> getAngularSpeed();
-    void setAngularSpeed(v8::Local<v8::Value>& newval);
-
-
+    void runSimulation(const SpaceObjectReference& sporef, const String& simname);
 
 
     /** Register an event pattern matcher and handler. */
-    //void registerHandler(const PatternList& pattern, v8::Persistent<v8::Object>& target, v8::Persistent<v8::Function>& cb);
     JSEventHandler* registerHandler(const PatternList& pattern, v8::Persistent<v8::Object>& target, v8::Persistent<v8::Function>& cb,v8::Persistent<v8::Object>& sender);
     v8::Handle<v8::Object> makeEventHandlerObject(JSEventHandler* evHand);
 
     void deleteHandler(JSEventHandler* toDelete);
+
+
+    void registerOnPresenceConnectedHandler(v8::Persistent<v8::Function>& cb) {
+        mOnPresenceConnectedHandler = cb;
+    }
+    void registerOnPresenceDisconnectedHandler(v8::Persistent<v8::Function>& cb) {
+        mOnPresenceDisconnectedHandler = cb;
+    }
+
 
     // Presence version of the access handlers
     v8::Handle<v8::Value> getPosition(SpaceID&);
@@ -140,6 +155,28 @@ public:
     void setVelocity(SpaceID&, v8::Local<v8::Value>& newval);
 
 private:
+    // EvalContext tracks the current state w.r.t. eval-related statements which
+    // may change in response to user actions (changing directory) or due to the
+    // way the system defines actions (e.g. import searches the current script's
+    // directory before trying other import paths).
+    struct EvalContext {
+        boost::filesystem::path currentScriptDir;
+    };
+    // This is a helper which adds an EvalContext to the stack and ensures that
+    // when it goes out of scope it is removed. This will almost always be the
+    // right way to add and remove an EvalContext from the stack, ensure
+    // multiple exit paths from a method don't cause the stack to become
+    // incorrect.
+    struct ScopedEvalContext {
+        ScopedEvalContext(JSObjectScript* _parent, const EvalContext& _ctx);
+        ~ScopedEvalContext();
+
+        JSObjectScript* parent;
+    };
+    friend class ScopedEvalContext;
+
+    std::stack<EvalContext> mEvalContextStack;
+
     typedef std::vector<SpaceObjectReference*> AddressableList;
     AddressableList mAddressableList;
 
@@ -147,12 +184,16 @@ private:
     JSEventHandlerList mEventHandlers;
 
 
+    // Handlers for presence connection events
+    v8::Persistent<v8::Function> mOnPresenceConnectedHandler;
+    v8::Persistent<v8::Function> mOnPresenceDisconnectedHandler;
+
     void handleTimeout(v8::Persistent<v8::Object> target, v8::Persistent<v8::Function> cb);
 
     void handleScriptingMessageNewProto (const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference payload);
     void handleCommunicationMessageNewProto (const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference payload);
     void getAllMessageable(AddressableList&allAvailableObjectReferences) const;
-    v8::Handle<v8::Value> protectedEval(const String& script_str);
+    v8::Handle<v8::Value> protectedEval(const String& script_str, const EvalContext& new_ctx);
 
 
 
@@ -174,14 +215,15 @@ private:
     Handle<Object> getGlobalObject();
 
     void populateAddressable(Handle<Object>& system_obj );
+    void createMessageableArray();
     void printAllHandlerLocations();
-    void populatePresences(Handle<Object>& system_obj );
+    void initializePresences(Handle<Object>& system_obj);
     void populateSystemObject(Handle<Object>& system_obj );
     void populateMath(Handle<Object>& system_obj);
 
-
-    void initializePresences(Handle<Object>& system_obj);
-    void clearAllPresences(Handle<Object>& system_obj);
+    // Adds/removes presences from the javascript's system.presences array.
+    v8::Handle<v8::Object> addPresence(const SpaceObjectReference& sporef);
+    void removePresence(const SpaceObjectReference& sporef);
 
     ODP::Port* mScriptingPort;
     ODP::Port* mMessagingPort;
@@ -190,10 +232,9 @@ private:
 
     JSObjectScriptManager* mManager;
 
-    typedef std::vector<JSPresenceStruct*> PresenceList;
-    PresenceList mPresenceList;
 
-    JSPresenceStruct* mPres;
+    typedef std::map<SpaceObjectReference, JSPresenceStruct*> PresenceMap;
+    PresenceMap mPresences;
 
 };
 

@@ -31,9 +31,6 @@
  */
 
 #include <sirikata/oh/Platform.hpp>
-#include <sirikata/proxyobject/ProxyMeshObject.hpp>
-#include <sirikata/proxyobject/ProxyCameraObject.hpp>
-#include <sirikata/proxyobject/LightInfo.hpp>
 #include <sirikata/core/task/WorkQueue.hpp>
 #include <sirikata/core/util/KnownServices.hpp>
 #include <sirikata/core/network/Stream.hpp>
@@ -73,26 +70,53 @@ namespace Sirikata {
 
 
 
-HostedObject::HostedObject(ObjectHostContext* ctx, ObjectHost*parent, const UUID &objectName, bool is_camera)
+HostedObject::HostedObject(ObjectHostContext* ctx, ObjectHost*parent, const UUID &objectName)
  : mContext(ctx),
-   mInternalObjectReference(objectName),
-   mIsCamera(is_camera)
+   mInternalObjectReference(objectName)
 {
     mSpaceData = new SpaceDataMap;
     mNextSubscriptionID = 0;
     mObjectHost=parent;
     mObjectScript=NULL;
 
-    
+
     mDelegateODPService = new ODP::DelegateService(
         std::tr1::bind(
             &HostedObject::createDelegateODPPort, this,
             _1, _2, _3
         )
     );
-
-    mHasScript = false;
 }
+
+
+//Need to define this function so that can register timeouts in jscript
+Network::IOService* HostedObject::getIOService()
+{
+    return mContext->ioService;
+}
+
+
+void HostedObject::runSimulation(const SpaceObjectReference& sporef, const String& simName)
+{
+    TimeSteppedSimulation* sim = NULL;
+
+    SpaceDataMap::iterator psd_it = mSpaceData->find(sporef);
+    if (psd_it == mSpaceData->end())
+    {
+        std::cout<<"\n\nERROR: should have an entry for this space object reference in spacedatamap.  Aborting.\n\n";
+        assert(false);
+    }
+
+    PerPresenceData& pd =  psd_it->second;
+    addSimListeners(pd,simName,sim);
+
+    if (sim != NULL)
+    {
+        HO_LOG(info, "Adding simulation to context");
+        mContext->add(sim);
+    }
+}
+
 
 HostedObject::~HostedObject() {
     destroy();
@@ -113,32 +137,6 @@ void HostedObject::destroy()
     mSpaceData->clear();
     mObjectHost->unregisterHostedObject(mInternalObjectReference);
 }
-
-struct HostedObject::PrivateCallbacks {
-    static void disconnectionEvent(const HostedObjectWPtr&weak_thus,const SpaceID&sid, const String&reason) {
-        std::tr1::shared_ptr<HostedObject>thus=weak_thus.lock();
-        if (thus) {
-            //FIXME: need to pass object reference here as well.
-            assert(false);
-            
-            // SpaceDataMap::iterator where=thus->mSpaceData->find(sid);
-            // if (where!=thus->mSpaceData->end()) {
-            //     where->second.destroy(thus->getTracker(sid));
-            //     thus->mSpaceData->erase(where);//FIXME do we want to back this up to the database first?
-            // }
-        }
-    }
-
-    static void connectionEvent(const HostedObjectWPtr&thus,
-                                const SpaceID&sid,
-                                Network::Stream::ConnectionStatus ce,
-                                const String&reason) {
-        
-        if (ce!=Network::Stream::Connected) {
-            disconnectionEvent(thus,sid,reason);
-        }
-    }
-};
 
 Time HostedObject::spaceTime(const SpaceID& space, const Time& t) {
     return t + mObjectHost->serverTimeOffset(space);
@@ -173,7 +171,7 @@ ProxyManagerPtr HostedObject::getProxyManager(const SpaceID& space, const Object
         // ).first;
         ProxyManagerPtr returner;
         return returner;
-        
+
     }
     return it->second.proxyManager;
 }
@@ -207,9 +205,13 @@ const ProxyObjectPtr &HostedObject::getProxyConst(const SpaceID &space, const Ob
     return iter->second.mProxyObject;
 }
 
+static ProxyManagerPtr nullManPtr;
 ProxyObjectPtr HostedObject::getProxy(const SpaceID& space, const ObjectReference& oref)
 {
     ProxyManagerPtr proxy_manager = getProxyManager(space,oref);
+    if (proxy_manager == nullManPtr)
+        return nullPtr;
+
     ProxyObjectPtr  proxy_obj = proxy_manager->getProxyObject(SpaceObjectReference(space,oref));
     return proxy_obj;
 }
@@ -223,21 +225,7 @@ bool myisalphanum(char c) {
 }
 }
 
-
-// attaches a script to the entity. This is like running 
-// the script after the entity is initialized
-// the entity should have been intialized
-void HostedObject::attachScript(const String& script_name)
-{
-  if(!mObjectScript)
-  {
-      SILOG(oh,warn,"[OH] Ignored attachScript because script is not initialized for " << getUUID().toString() << "(internal id)");
-      return;
-  }
-  mObjectScript->attachScript(script_name);
-}
-
-void HostedObject::initializeScript(const String& script, const ObjectScriptManager::Arguments &args, const std::string& fileScriptToAttach)
+void HostedObject::initializeScript(const String& script, const String& args)
 {
     if (mObjectScript) {
         SILOG(oh,warn,"[OH] Ignored initializeScript because script already exists for " << getUUID().toString() << "(internal id)");
@@ -245,7 +233,7 @@ void HostedObject::initializeScript(const String& script, const ObjectScriptMana
     }
 
     SILOG(oh,debug,"[OH] Creating a script object for " << getUUID().toString() << "(internal id)");
-    
+
     static ThreadIdCheck scriptId=ThreadId::registerThreadGroup(NULL);
     assertThreadGroup(scriptId);
     if (!ObjectScriptManagerFactory::getSingleton().hasConstructor(script)) {
@@ -264,10 +252,8 @@ void HostedObject::initializeScript(const String& script, const ObjectScriptMana
     ObjectScriptManager *mgr = ObjectScriptManagerFactory::getSingleton().getConstructor(script)("");
     if (mgr) {
         mObjectScript = mgr->createObjectScript(this->getSharedPtr(), args);
-        if (fileScriptToAttach != "")
-        {
-            mObjectScript->attachScript(fileScriptToAttach);
-        }
+        mObjectScript->scriptTypeIs(script);
+        mObjectScript->scriptOptionsIs(args);
     }
 }
 
@@ -277,12 +263,11 @@ void HostedObject::connect(
         const BoundingSphere3f &meshBounds,
         const String& mesh,
         const UUID&object_uuid_evidence,
-        PerPresenceData* ppd,
-        const String& scriptFile,
-        const String& scriptType)
+        PerPresenceData* ppd)
 {
     connect(spaceID, startingLocation, meshBounds, mesh, SolidAngle::Max, object_uuid_evidence,ppd);
 }
+
 
 void HostedObject::connect(
         const SpaceID&spaceID,
@@ -291,13 +276,10 @@ void HostedObject::connect(
         const String& mesh,
         const SolidAngle& queryAngle,
         const UUID&object_uuid_evidence,
-        PerPresenceData* ppd,
-        const String& scriptFile,
-        const String& scriptType)
+        PerPresenceData* ppd)
 {
     if (spaceID == SpaceID::null())
         return;
-
 
     // Note: we always use Time::null() here.  The server will fill in the
     // appropriate value.  When we get the callback, we can fix this up.
@@ -309,51 +291,43 @@ void HostedObject::connect(
         meshBounds,
         mesh,
         queryAngle,
-
-        std::tr1::bind(&HostedObject::handleConnected, this, _1, _2, _3, _4, _5, _6, _7, scriptFile,scriptType,ppd),
-
+        std::tr1::bind(&HostedObject::handleConnected, this, _1, _2, _3, ppd),
         std::tr1::bind(&HostedObject::handleMigrated, this, _1, _2, _3),
-        std::tr1::bind(&HostedObject::handleStreamCreated, this, _1) 
+        std::tr1::bind(&HostedObject::handleStreamCreated, this, _1),
+        std::tr1::bind(&HostedObject::handleDisconnected, this, _1, _2)
     );
 
 }
 
 
-void HostedObject::addSimListeners(PerPresenceData*& pd, const std::list<String>& oh_sims,    std::vector<TimeSteppedSimulation*>& sims)
+
+void HostedObject::addSimListeners(PerPresenceData& pd, const String& simName,TimeSteppedSimulation*& sim)
 {
     SpaceID space = mObjectHost->getDefaultSpace();
-    
-    for(std::list<String>::const_iterator it = oh_sims.begin(); it != oh_sims.end(); it++)
-        SILOG(cppoh,error,*it);
 
-    pd = new PerPresenceData (this,space);
+    SILOG(cppoh,error,simName);
 
-    ObjectHostProxyManagerPtr proxyManPtr = pd->getProxyManager();
-    
-    for(std::list<String>::const_iterator it = oh_sims.begin(); it != oh_sims.end(); it++)
+    HO_LOG(info,String("[OH] Initializing ") + simName);
+    sim = SimulationFactory::getSingleton().getConstructor ( simName ) ( mContext, getSharedPtr(), pd.id(), "");
+    if (!sim)
     {
-        String simName = *it;
-        HO_LOG(info,String("[OH] Initializing ") + simName);
-        
-        TimeSteppedSimulation *sim =SimulationFactory::getSingleton().getConstructor ( simName ) ( mContext, proxyManPtr.get(), "" );
-        if (!sim) {
-            HO_LOG(error,String("Unable to load ") + simName + String(" plugin. The PATH environment variable is ignored, so make sure you have copied the DLLs from dependencies/ogre/bin/ into the current directory. Sorry about this!"));
-            std::cerr << "Press enter to continue" << std::endl;
-            fgetc(stdin);
-            exit(0);
-        }
-        else {
-            mObjectHost->addListener(sim);
-            HO_LOG(info,String("Successfully initialized ") + simName);
-            sims.push_back(sim);
-        }
+        HO_LOG(error,String("Unable to load ") + simName + String(" plugin. The PATH environment variable is ignored, so make sure you have copied the DLLs from dependencies/ogre/bin/ into the current directory. Sorry about this!"));
+        std::cerr << "Press enter to continue" << std::endl;
+        fgetc(stdin);
+        exit(0);
+    }
+    else
+    {
+        mObjectHost->addListener(sim);
+        HO_LOG(info,String("Successfully initialized ") + simName);
     }
 }
 
 
-void HostedObject::handleConnected(const SpaceID& space, const ObjectReference& obj, ServerID server, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bnds, const String& mesh, const String& scriptFile, const String& scriptType, PerPresenceData* ppd)
+
+
+void HostedObject::handleConnected(const SpaceID& space, const ObjectReference& obj, ObjectHost::ConnectionInfo info, PerPresenceData* ppd)
 {
-    std::cout << "\n\n\n handleConnected: MESH MESH MESH " << mesh << "\n\n\n";
     // FIXME this never gets cleaned out on disconnect
     mSSTDatagramLayers.push_back(
         BaseDatagramLayerType::createDatagramLayer(
@@ -365,14 +339,14 @@ void HostedObject::handleConnected(const SpaceID& space, const ObjectReference& 
     // We have to manually do what mContext->mainStrand->wrap( ... ) should be
     // doing because it can't handle > 5 arguments.
     mContext->mainStrand->post(
-        std::tr1::bind(&HostedObject::handleConnectedIndirect, this, space, obj, server, loc, orient, bnds,mesh,scriptFile,scriptType, ppd)
+        std::tr1::bind(&HostedObject::handleConnectedIndirect, this, space, obj, info, ppd)
     );
 }
 
 
-void HostedObject::handleConnectedIndirect(const SpaceID& space, const ObjectReference& obj, ServerID server, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bnds, const String& mesh, const String& scriptFile, const String& scriptType, PerPresenceData* ppd)
+void HostedObject::handleConnectedIndirect(const SpaceID& space, const ObjectReference& obj, ObjectHost::ConnectionInfo info, PerPresenceData* ppd)
 {
-    if (server == NullServerID) {
+    if (info.server == NullServerID) {
         HO_LOG(warning,"Failed to connect object (internal:" << mInternalObjectReference.toString() << ") to space " << space);
         return;
     }
@@ -395,22 +369,16 @@ void HostedObject::handleConnectedIndirect(const SpaceID& space, const ObjectRef
             );
         }
     }
-    
+
     // Convert back to local time
-    TimedMotionVector3f local_loc(localTime(space, loc.updateTime()), loc.value());
-    TimedMotionQuaternion local_orient(localTime(space, orient.updateTime()), orient.value());
-		std::cout << "\n\n\n Creating proxy with mesh = "  << mesh << "\n\n\n";
-    ProxyObjectPtr self_proxy = createProxy(self_objref, self_objref, URI(mesh), mIsCamera, local_loc, local_orient, bnds);
+    TimedMotionVector3f local_loc(localTime(space, info.loc.updateTime()), info.loc.value());
+    TimedMotionQuaternion local_orient(localTime(space, info.orient.updateTime()), info.orient.value());
+    ProxyObjectPtr self_proxy = createProxy(self_objref, self_objref, Transfer::URI(info.mesh), local_loc, local_orient, info.bnds);
 
     // Use to initialize PerSpaceData
     SpaceDataMap::iterator psd_it = mSpaceData->find(self_objref);
     PerPresenceData& psd = psd_it->second;
-    initializePerSpaceData(psd, self_proxy);
-
-    // Special case for camera
-    ProxyCameraObjectPtr cam = std::tr1::dynamic_pointer_cast<ProxyCameraObject, ProxyObject>(self_proxy);
-    if (cam)
-        cam->attach(String(), 0, 0);
+    initializePerPresenceData(psd, self_proxy);
 
 
     //bind an odp port to listen for the begin scripting signal.  if have
@@ -418,13 +386,7 @@ void HostedObject::handleConnectedIndirect(const SpaceID& space, const ObjectRef
     //a JSObjectScript for this hostedobject
     bindODPPort(space,obj,Services::LISTEN_FOR_SCRIPT_BEGIN);
 
-    //attach script callback;
-    if (scriptFile != "")
-    {
-        ObjectScriptManager::Arguments script_args;  //these can just be empty;
-        this->initializeScript(scriptType,script_args,scriptFile);
-    }
-    
+    notify(&SessionEventListener::onConnected, getSharedPtr(), self_objref);
 }
 
 void HostedObject::handleMigrated(const SpaceID& space, const ObjectReference& obj, ServerID server)
@@ -445,7 +407,7 @@ void HostedObject::handleStreamCreated(const SpaceObjectReference& spaceobj) {
     }
 }
 
-void HostedObject::initializePerSpaceData(PerPresenceData& psd, ProxyObjectPtr selfproxy) {
+void HostedObject::initializePerPresenceData(PerPresenceData& psd, ProxyObjectPtr selfproxy) {
     psd.initializeAs(selfproxy);
 }
 
@@ -460,53 +422,10 @@ void HostedObject::disconnectFromSpace(const SpaceID &spaceID, const ObjectRefer
     }
 }
 
-
-// //returns true if this is a script init message.  returns false otherwise
-// bool HostedObject::handleScriptInitMessage(const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference bodyData)
-// {
-//     if (dst.port() != Services::LISTEN_FOR_SCRIPT_BEGIN)
-//         return false;
-
-//     //I don't really know what this segment of code does.  I copied it from processRPC
-//     RoutableMessageBody msg;
-//     RoutableMessageBody outer_msg;
-//     outer_msg.ParseFromArray(bodyData.data(), bodyData.length());
-//     if (outer_msg.has_payload())
-//     {
-//         assert( outer_msg.message_size() == 0 );
-//         msg.ParseFromString(outer_msg.payload());
-//     }
-//     else
-//         msg = outer_msg;
-
-
-//     int numNames = msg.message_size();
-//     if (numNames <= 0)
-//     {
-//         // Invalid message!
-//         //was a poorly formatted message to the listen_for_script_begin port.
-//         //send back a protocol error.
-//         RoutableMessageHeader replyHeader;
-//         replyHeader.set_return_status(RoutableMessageHeader::PROTOCOL_ERROR);
-//         sendViaSpace(replyHeader, MemoryReference::null());
-//         return true;
-//     }
-
-//     //if any of the names match, then we're going to go ahead an create a script
-//     //for it.
-//     for (int i = 0; i < numNames; ++i)
-//     {
-//         std::string name = msg.message_names(i);
-//         MemoryReference body(msg.message_arguments(i));
-        
-//         //means that we are supposed to create a new scripted object
-//         if (name == KnownMessages::INIT_SCRIPT)
-//             processInitScriptMessage(body);
-//     }
-
-//     //it was on the script init port, so it was a scripting init message
-//     return true;
-// }
+void HostedObject::handleDisconnected(const SpaceObjectReference& spaceobj, Disconnect::Code cc) {
+    notify(&SessionEventListener::onDisconnected, getSharedPtr(), spaceobj);
+    disconnectFromSpace(spaceobj.space(), spaceobj.object());
+}
 
 
 
@@ -522,7 +441,7 @@ bool HostedObject::handleScriptInitMessage(const ODP::Endpoint& src, const ODP::
 
 
     bool parsed = sMessage.ParseFromArray(bodyData.data(),bodyData.size());
-    
+
     if (! parsed)
         return false;
 
@@ -536,49 +455,14 @@ bool HostedObject::handleScriptInitMessage(const ODP::Endpoint& src, const ODP::
 
     if (messager != KnownMessages::INIT_SCRIPT)
         return false;
-    
+
     if (scriptType == ScriptTypes::JS_SCRIPT_TYPE)
     {
-        mHasScript = true;
-        mScriptType = scriptType;
-
-        ObjectScriptManager::Arguments scriptargs;
-        initializeScript(scriptType,scriptargs,"");
+        initializeScript(scriptType,"");
     }
 
     return true;
 }
-
-
-//The processInitScriptSetup takes in a message body that we know should be an
-//init script message (from checks in handleScriptInitMessage).  
-//Does some additional checking on the message body, and then sets a few global
-//variables and calls the object's initializeScript function
-// void HostedObject::processInitScriptMessage(MemoryReference& body)
-// {
-//     Sirikata::JS::Protocol::ScriptingInit si;
-//     //Protocol::ScriptingInit si;
-//     si.ParseFromArray(body.data(),body.size());
-    
-//     if (si.has_script())
-//     {
-//         String script_type = si.script();
-//         ObjectScriptManager::Arguments script_args;
-//         if (si.has_script_args())
-//         {
-            
-//             Protocol::StringMapProperty args_map = si.script_args();
-//             assert(args_map.keys_size() == args_map.values_size());
-//             for (int i = 0; i < args_map.keys_size(); ++i)
-//                 script_args[ args_map.keys(i) ] = args_map.values(i);
-//         }
-//         mHasScript = true;
-//         mScriptType = script_type;
-//         mScriptArgs = script_args;
-//         initializeScript(script_type, script_args);
-//     }
-// }
-
 
 
 bool HostedObject::handleEntityCreateMessage(const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference bodyData)
@@ -601,7 +485,7 @@ void HostedObject::receiveMessage(const SpaceID& space, const Protocol::Object::
 
     if (mDelegateODPService->deliver(src_ep, dst_ep, MemoryReference(msg->payload()))) {
         // if this was true, it got delivered
-        
+
         delete msg;
     }
     else if (handleScriptInitMessage(src_ep,dst_ep,MemoryReference(msg->payload())))
@@ -685,14 +569,13 @@ bool HostedObject::handleLocationMessage(const SpaceObjectReference& spaceobj, c
     {
         return true;
     }
-    
+
     for(int32 idx = 0; idx < contents.update_size(); idx++) {
         Sirikata::Protocol::Loc::LocationUpdate update = contents.update(idx);
 
-
         ProxyManagerPtr proxy_manager = getProxyManager(spaceobj.space(), spaceobj.object());
-
         ProxyObjectPtr proxy_obj = proxy_manager->getProxyObject(SpaceObjectReference(spaceobj.space(), ObjectReference(update.object())));
+
         if (!proxy_obj) continue;
 
 
@@ -716,25 +599,23 @@ bool HostedObject::handleLocationMessage(const SpaceObjectReference& spaceobj, c
             proxy_obj->setOrientation(orient);
         }
 
-        if (update.has_mesh()) {
-          std::string mesh = update.mesh();
-          ProxyMeshObject *meshObj = dynamic_cast<ProxyMeshObject*>(proxy_obj.get());
+        if (update.has_bounds()) {
+            proxy_obj->setBounds(update.bounds());
+        }
 
-          if (meshObj && mesh != "") {
-            //std::cout << "MESH UPDATE: " << mesh  << "!!!\n";
-            meshObj->setMesh(Transfer::URI(mesh));
-          }
-          else if (mesh != ""){
-            //std::cout << "MESH UPDATE but no proxy object!\n";
-          }
+        if (update.has_mesh())
+        {
+          std::string mesh = update.mesh();
+          if (mesh != "")
+              proxy_obj->setMesh(Transfer::URI(mesh));
         }
     }
 
     return true;
 }
 
-bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, const std::string& payload) {
-    
+bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, const std::string& payload)
+{
     Sirikata::Protocol::Prox::ProximityResults contents;
     bool parse_success = contents.ParseFromString(payload);
     if (!parse_success) return false;
@@ -764,29 +645,28 @@ bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, 
             }
 
 
-            
+
             if (!getProxyManager(spaceobj.space(),spaceobj.object())->getProxyObject(proximateID)) {
                 TimedMotionQuaternion orient(localTime(space, addition.orientation().t()), MotionQuaternion(addition.orientation().position(), addition.orientation().velocity()));
 
-                URI meshuri;
-                if (addition.has_mesh()) meshuri = URI(addition.mesh());
+                Transfer::URI meshuri;
+                if (addition.has_mesh()) meshuri = Transfer::URI(addition.mesh());
 
                 // FIXME use weak_ptr instead of raw
                 BoundingSphere3f bnds = addition.bounds();
-                ProxyObjectPtr proxy_obj = createProxy(proximateID, spaceobj, meshuri, false, loc, orient, bnds);
+                ProxyObjectPtr proxy_obj = createProxy(proximateID, spaceobj, meshuri, loc, orient, bnds);
             }
-            else {
+            else
+            {
 
                 ProxyManagerPtr proxy_manager = getProxyManager(spaceobj.space(), spaceobj.object());
                 ProxyObjectPtr proxy_obj = proxy_manager->getProxyObject(SpaceObjectReference(spaceobj.space(),
                         ObjectReference(addition.object())));
 
-                if (!proxy_obj) continue;
+                if (!proxy_obj)
+                    continue;
 
-              ProxyMeshObject *mesh = dynamic_cast<ProxyMeshObject*>(proxy_obj.get());
-              if (mesh) {
-                mesh->setMesh( Transfer::URI(addition.mesh()));
-              }
+                proxy_obj->setMesh(Transfer::URI(addition.mesh()));
             }
         }
 
@@ -799,11 +679,7 @@ bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, 
                                                                      ObjectReference(removal.object())));
             if (!proxy_obj) continue;
 
-            ProxyMeshObject *mesh = dynamic_cast<ProxyMeshObject*>(proxy_obj.get());
-            if (mesh) {
-              mesh->setMesh( Transfer::URI(""));
-            }
-            else continue;
+            proxy_obj->setMesh(Transfer::URI(""));
 
 
             CONTEXT_OHTRACE(prox,
@@ -815,69 +691,44 @@ bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, 
         }
     }
 
+
+    //Update the addressable for this Entity
+    updateAddressable();
+
     return true;
 }
 
 
-ProxyObjectPtr HostedObject::createProxy(const SpaceObjectReference& objref, const SpaceObjectReference& owner_objref, const URI& meshuri, bool is_camera, TimedMotionVector3f& tmv, TimedMotionQuaternion& tmq, const BoundingSphere3f& bs)
+ProxyObjectPtr HostedObject::createProxy(const SpaceObjectReference& objref, const SpaceObjectReference& owner_objref, const Transfer::URI& meshuri, TimedMotionVector3f& tmv, TimedMotionQuaternion& tmq, const BoundingSphere3f& bs)
 {
-    std::cout << "\n\n\n HostedObject::createProxy has mesh uri = " << meshuri.toString() << "\n\n\n" ;
-    ProxyObjectPtr returner = buildProxy(objref,owner_objref,meshuri,is_camera);
+    ProxyObjectPtr returner = buildProxy(objref,owner_objref,meshuri);
     returner->setLocation(tmv);
     returner->setOrientation(tmq);
     returner->setBounds(bs);
 
-    
-    if (!is_camera)
-    {
-		   
-		    std::cout << "\n\n\n NOT A CAMERA \n\n\n";
-
-				if(meshuri)
-				{
-          ProxyMeshObject *mesh = dynamic_cast<ProxyMeshObject*>(returner.get());
-          if (mesh)
-          {
-				     std::cout << "\n\n\n Setting the mesh on the proxy object \n\n\n";
-             mesh->setMesh(meshuri);
-          }
-			  }
-				else
-				{
-				  std::cout << "\n\n With no camera and no mesh \n\n\n";
-				}
-    }
-
-
+    if(meshuri)
+        returner->setMesh(meshuri);
 
     return returner;
 }
 
+
 //should only be called from within createProxy functions.  Otherwise, will not
 //initilize position and quaternion correctly
-ProxyObjectPtr HostedObject::buildProxy(const SpaceObjectReference& objref, const SpaceObjectReference& owner_objref, const URI& meshuri, bool is_camera)
+ProxyObjectPtr HostedObject::buildProxy(const SpaceObjectReference& objref, const SpaceObjectReference& owner_objref, const Transfer::URI& meshuri)
 {
-    //ProxyManagerPtr proxy_manager = getProxyManager(objref.space(),
-    //objref.object());
     ProxyManagerPtr proxy_manager = getProxyManager(owner_objref.space(), owner_objref.object());
 
     if (!proxy_manager)
     {
-        //mSpaceData->insert(SpaceDataMap::value_type( objref, PerPresenceData(this, objref.space(),objref.object()) ));
-        //proxy_manager = getProxyManager(objref.space(), objref.object());
         mSpaceData->insert(SpaceDataMap::value_type( owner_objref, PerPresenceData(this, owner_objref.space(),owner_objref.object()) ));
         proxy_manager = getProxyManager(owner_objref.space(), owner_objref.object());
     }
 
-    
-    ProxyObjectPtr proxy_obj;
+    ProxyObjectPtr proxy_obj = ProxyObject::construct<ProxyObject> (proxy_manager.get(),objref,getSharedPtr(),owner_objref);
 
-    if (is_camera) proxy_obj = ProxyObject::construct<ProxyCameraObject>
-                       (proxy_manager.get(), objref, getSharedPtr(), owner_objref);
-    else proxy_obj = ProxyObject::construct<ProxyMeshObject>(proxy_manager.get(), objref, getSharedPtr(), owner_objref);
-
-// The call to createObject must occur before trying to do any other
-// operations so that any listeners will be set up.
+    // The call to createObject must occur before trying to do any other
+    // operations so that any listeners will be set up.
     proxy_manager->createObject(proxy_obj);
     return proxy_obj;
 }
@@ -896,6 +747,18 @@ ProxyObjectPtr HostedObject::getDefaultProxyObject(const SpaceID& space)
     return  getProxy(space, oref);
 }
 
+
+ProxyManagerPtr HostedObject::presence(const SpaceObjectReference& sor) {
+    ProxyManagerPtr proxyManPtr = getProxyManager(sor.space(), sor.object());
+    return proxyManPtr;
+}
+
+ProxyObjectPtr HostedObject::self(const SpaceObjectReference& sor) {
+    ProxyManagerPtr proxy_man = presence(sor);
+    if (!proxy_man) return ProxyObjectPtr();
+    ProxyObjectPtr proxy_obj = proxy_man->getProxyObject(sor);
+    return proxy_obj;
+}
 
 
 // ODP::Service Interface
@@ -1026,21 +889,14 @@ Vector3d HostedObject::requestCurrentPosition (const SpaceID& space, const Objec
 }
 
 
+//apparently, will always return true now.  even if camera.
 bool HostedObject::requestMeshUri(const SpaceID& space, const ObjectReference& oref, Transfer::URI& tUri)
 {
-    
+
     ProxyManagerPtr proxy_manager = getProxyManager(space,oref);
     ProxyObjectPtr  proxy_obj     = proxy_manager->getProxyObject(SpaceObjectReference(space,oref));
 
-
-    //this cast does not work.
-    ProxyMeshObjectPtr proxy_mesh_obj = std::tr1::dynamic_pointer_cast<ProxyMeshObject,ProxyObject> (proxy_obj);
-
-    
-    if (proxy_mesh_obj )
-        return false;
-
-    tUri =  proxy_mesh_obj->getMesh();
+    tUri = proxy_obj->getMesh();
     return true;
 }
 
@@ -1055,49 +911,68 @@ void HostedObject::requestOrientationUpdate(const SpaceID& space, const ObjectRe
     sendLocUpdateRequest(space, oref, NULL, &orient, NULL, NULL);
 }
 
+BoundingSphere3f HostedObject::requestCurrentBounds(const SpaceID& space,const ObjectReference& oref) {
+    ProxyObjectPtr proxy_obj = getProxy(space,oref);
+    return proxy_obj->getBounds();
+}
+
 void HostedObject::requestBoundsUpdate(const SpaceID& space, const ObjectReference& oref, const BoundingSphere3f& bounds) {
     sendLocUpdateRequest(space, oref,NULL, NULL, &bounds, NULL);
 }
-
-void HostedObject::requestScaleUpdate(const SpaceID& space, const ObjectReference& oref, const Vector3f& toScaleTo)
-{
-    std::cout<<"\n\nThe requestScaleUpdate function does not work\n\n";
-    assert(false);
-}
-
-bool HostedObject::requestCurrentScale(const SpaceID& space, const ObjectReference& oref, Vector3f& scaler)
-{
-    std::cout<<"\n\nThe requestCurrentScale function does not work\n\n";
-    assert(false);
-    return false;
-}
-
 
 void HostedObject::requestMeshUpdate(const SpaceID& space, const ObjectReference& oref, const String& mesh)
 {
     sendLocUpdateRequest(space, oref, NULL, NULL, NULL, &mesh);
 }
 
+void HostedObject::requestQueryUpdate(const SpaceID& space, const ObjectReference& oref, SolidAngle new_angle) {
+    Protocol::Prox::QueryRequest request;
+    request.set_query_angle(new_angle.asFloat());
+    std::string payload = serializePBJMessage(request);
+
+    SSTStreamPtr spaceStream = mObjectHost->getSpaceStream(space, getUUID());
+    if (spaceStream != SSTStreamPtr()) {
+        SSTConnectionPtr conn = spaceStream->connection().lock();
+        assert(conn);
+
+        conn->datagram(
+            (void*)payload.data(), payload.size(),
+            OBJECT_PORT_PROXIMITY, OBJECT_PORT_PROXIMITY,
+            NULL
+        );
+    }
+}
+
+void HostedObject::requestQueryRemoval(const SpaceID& space, const ObjectReference& oref) {
+    requestQueryUpdate(space, oref, SolidAngle::Max);
+}
+
 void HostedObject::sendLocUpdateRequest(const SpaceID& space, const ObjectReference& oref, const TimedMotionVector3f* const loc, const TimedMotionQuaternion* const orient, const BoundingSphere3f* const bounds, const String* const mesh) {
+    ProxyObjectPtr self_proxy = getProxy(space, oref);
     // Generate and send an update to Loc
     Protocol::Loc::Container container;
     Protocol::Loc::ILocationUpdateRequest loc_request = container.mutable_update_request();
     if (loc != NULL) {
+        self_proxy->setLocation(*loc);
         Protocol::ITimedMotionVector requested_loc = loc_request.mutable_location();
         requested_loc.set_t( spaceTime(space, loc->updateTime()) );
         requested_loc.set_position(loc->position());
         requested_loc.set_velocity(loc->velocity());
     }
     if (orient != NULL) {
+        self_proxy->setOrientation(*orient);
         Protocol::ITimedMotionQuaternion requested_orient = loc_request.mutable_orientation();
         requested_orient.set_t( spaceTime(space, orient->updateTime()) );
         requested_orient.set_position(orient->position());
         requested_orient.set_velocity(orient->velocity());
     }
-    if (bounds != NULL)
+    if (bounds != NULL) {
+        self_proxy->setBounds(*bounds);
         loc_request.set_bounds(*bounds);
+    }
     if (mesh != NULL)
     {
+        self_proxy->setMesh(Transfer::URI(*mesh));
         loc_request.set_mesh(*mesh);
     }
 
@@ -1161,15 +1036,15 @@ void HostedObject::persistToFile(std::ofstream& fp)
 {
   SpaceObjRefSet ss;
 
-	getSpaceObjRefs(ss);
+  getSpaceObjRefs(ss);
 
-	SpaceObjRefSet::iterator it = ss.begin();
+  SpaceObjRefSet::iterator it = ss.begin();
 
-	for(; it != ss.end(); it++)
-	{
-	  HostedObject::EntityState* es = getEntityState((*it).space(), (*it).object()); 
-    es->persistToFile(fp);
-	}
+  for(; it != ss.end(); it++)
+  {
+      HostedObject::EntityState* es = getEntityState((*it).space(), (*it).object());
+      es->persistToFile(fp);
+  }
 }
 
 
@@ -1188,7 +1063,7 @@ void HostedObject::EntityState::persistToFile(std::ofstream& fp)
 	 fp << orient.x << "," << orient.y << "," << orient.z << "," << orient.w << "," ;
 
 	 /* persist the velocity */
-	 
+
 	 fp << vel.x << "," << vel.y << "," << vel.z << "," ;
 
 	 /* persist the rotation */
@@ -1203,42 +1078,68 @@ void HostedObject::EntityState::persistToFile(std::ofstream& fp)
 
 	 fp << "\"" << mesh << "\""  << "," ;
 
+
 	 /* persist the scale */
 
-	 fp << scale << std::endl;
+	 fp << scale << ",";
+
+
+	 /* persist the object id */
+
+	 fp << objectID << ",";
+
+
+	 fp << script_type << ",";
+
+
+   fp << script_opts << std::endl;
 }
 
 
 HostedObject::EntityState* HostedObject::getEntityState(const SpaceID& space, const ObjectReference& oref)
 {
 
-  HostedObject::EntityState* es = new HostedObject::EntityState();
-	ProxyObjectPtr poptr = getProxy(space, oref);
-  Location loc = getLocation(space, oref);
-  es->objType = "mesh";
-	es->subType = "graphiconly";
-  
-	// FIXME : HostedObject does not take the name of the entity into account right now after reading from the scene file.
-	es->name = "unknown";
-	es->pos = loc.getPosition();
-	es->orient = loc.getOrientation();
-  es->vel = loc.getVelocity();
-  es->rot = loc.getAxisOfRotation();	
-	es->angular_speed = loc.getAngularSpeed(); 
-  
-	ProxyMeshObjectPtr proxyMeshObject = (std::tr1::dynamic_pointer_cast<ProxyMeshObject,ProxyObject> (poptr));
-	
-	if(proxyMeshObject)
-	{
-	  cout << "\n\n Setting the mesh object here\n\n";
-	  es->mesh = proxyMeshObject->getMesh().toString();    
-	}
+    HostedObject::EntityState* es = new HostedObject::EntityState();
+    ProxyObjectPtr poptr = getProxy(space, oref);
 
 
-	/* Get Scale from the Bounding Sphere. Scale is the radius of this sphere */
-	es->scale = poptr->getBounds().radius(); 
 
-	return es;
+    Location loc = getLocation(space, oref);
+    es->objType = "mesh";
+    es->subType = "graphiconly";
+
+    // FIXME : HostedObject does not take the name of the entity into account right now after reading from the scene file.
+    es->name = "unknown";
+    es->pos = loc.getPosition();
+    es->orient = loc.getOrientation();
+    es->vel = loc.getVelocity();
+    es->rot = loc.getAxisOfRotation();
+    es->angular_speed = loc.getAngularSpeed();
+
+
+    if (poptr == nullPtr)
+        assert (false);
+
+    std::cout<<"\n\n";
+    std::cout<<poptr->getMesh();
+    std::cout<<"\n\n";
+    std::cout.flush();
+
+    es->mesh = poptr->getMesh().toString();
+
+
+
+    /* Get Scale from the Bounding Sphere. Scale is the radius of this sphere */
+    es->scale = poptr->getBounds().radius();
+    es->objectID = oref.toString();
+
+    if(mObjectScript)
+    {
+        es->script_type = mObjectScript->scriptType();
+        es->script_opts = mObjectScript->scriptOptions();
+    }
+    return es;
+
 }
 
 

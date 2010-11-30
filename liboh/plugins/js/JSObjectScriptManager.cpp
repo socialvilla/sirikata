@@ -65,6 +65,19 @@ ObjectScriptManager* JSObjectScriptManager::createObjectScriptManager(const Siri
 
 JSObjectScriptManager::JSObjectScriptManager(const Sirikata::String& arguments)
 {
+
+    OptionValue* import_paths;
+    InitializeClassOptions(
+        "jsobjectscriptmanager",this,
+        // Default value allows us to use std libs in the build tree, starting
+        // from build/cmake
+        import_paths = new OptionValue("import-paths","../../liboh/plugins/js/scripts",OptionValueType<std::list<String> >(),"Comma separated list of paths to import files from, searched in order for the requested import."),
+        NULL
+    );
+
+    mOptions = OptionSet::getOptions("jsobjectscriptmanager",this);
+    mOptions->parse(arguments);
+
     createSystemTemplate();
     createAddressableTemplate();
     createHandlerTemplate();
@@ -86,7 +99,7 @@ void JSObjectScriptManager::createMathTemplate()
     mMathTemplate->Set(JS_STRING(cos),v8::FunctionTemplate::New(JSMath::ScriptCosFunction));
     mMathTemplate->Set(JS_STRING(sin),v8::FunctionTemplate::New(JSMath::ScriptSinFunction));
     mMathTemplate->Set(JS_STRING(rand),v8::FunctionTemplate::New(JSMath::ScriptRandFunction));
-       
+
 }
 
 
@@ -102,17 +115,17 @@ void JSObjectScriptManager::createContextTemplate()
     v8::HandleScope handle_scope;
     // And we expose some functionality directly
     mContextTemplate = v8::Persistent<v8::ObjectTemplate>::New(v8::ObjectTemplate::New());
-    
+
     // An internal field holds the JSObjectScript*
     mContextTemplate->SetInternalFieldCount(CONTEXT_TEMPLATE_FIELD_COUNT);
-    
+
     // Functions / types
     mContextTemplate->Set(v8::String::New("timeout"), v8::FunctionTemplate::New(JSSystem::ScriptTimeout));
     mContextTemplate->Set(v8::String::New("print"), v8::FunctionTemplate::New(JSSystem::Print));
     mContextTemplate->Set(v8::String::New("__test"), v8::FunctionTemplate::New(JSSystem::__ScriptGetTest));
     mContextTemplate->Set(v8::String::New("__broadcast"),v8::FunctionTemplate::New(JSSystem::__ScriptTestBroadcastMessage));
 
-    
+
     //these are mutable fields
     mVec3Template = v8::Persistent<v8::FunctionTemplate>::New(CreateVec3Template());
     mContextTemplate->Set(v8::String::New("Vec3"), mVec3Template);
@@ -122,7 +135,7 @@ void JSObjectScriptManager::createContextTemplate()
 
     mPatternTemplate = v8::Persistent<v8::FunctionTemplate>::New(CreatePatternTemplate());
     mContextTemplate->Set(JS_STRING(Pattern), mPatternTemplate);
-    
+
 }
 
 
@@ -148,20 +161,14 @@ void JSObjectScriptManager::createSystemTemplate()
     system_templ->Set(v8::String::New("import"), v8::FunctionTemplate::New(JSSystem::ScriptImport));
     system_templ->Set(v8::String::New("__test"), v8::FunctionTemplate::New(JSSystem::__ScriptGetTest));
     system_templ->Set(v8::String::New("__broadcast"),v8::FunctionTemplate::New(JSSystem::__ScriptTestBroadcastMessage));
-
     system_templ->Set(v8::String::New("reboot"),v8::FunctionTemplate::New(JSSystem::ScriptReboot));
     system_templ->Set(v8::String::New("update_addressable"),v8::FunctionTemplate::New(JSSystem::ScriptUpdateAddressable));
-
     system_templ->Set(v8::String::New("create_entity"), v8::FunctionTemplate::New(JSSystem::ScriptCreateEntity));
     system_templ->Set(v8::String::New("create_presence"), v8::FunctionTemplate::New(JSSystem::ScriptCreatePresence));
-
-    
     system_templ->Set(v8::String::New("create_context"),v8::FunctionTemplate::New(JSSystem::ScriptCreateContext));
 
-    
-    //these are mutable fields
-    system_templ->SetAccessor(JS_STRING(angularAxis), JSSystem::ScriptGetAxisOfRotation, JSSystem::ScriptSetAxisOfRotation);
-    system_templ->SetAccessor(JS_STRING(angularVelocity), JSSystem::ScriptGetAngularSpeed, JSSystem::ScriptSetAngularSpeed);
+    system_templ->Set(v8::String::New("onPresenceConnected"),v8::FunctionTemplate::New(JSSystem::ScriptOnPresenceConnected));
+    system_templ->Set(v8::String::New("onPresenceDisconnected"),v8::FunctionTemplate::New(JSSystem::ScriptOnPresenceDisconnected));
 
     mVec3Template = v8::Persistent<v8::FunctionTemplate>::New(CreateVec3Template());
     system_templ->Set(v8::String::New("Vec3"), mVec3Template);
@@ -173,68 +180,12 @@ void JSObjectScriptManager::createSystemTemplate()
     system_templ->Set(JS_STRING(Pattern), mPatternTemplate);
     system_templ->Set(JS_STRING(registerHandler),v8::FunctionTemplate::New(JSSystem::ScriptRegisterHandler));
 
-    
+
     mGlobalTemplate->Set(v8::String::New(JSSystemNames::ROOT_OBJECT_NAME), system_templ);
 }
 
 
-void JSObjectScriptManager::createSystemTemplate_old()
-{
-    v8::HandleScope handle_scope;
-    mGlobalTemplate = v8::Persistent<v8::ObjectTemplate>::New(v8::ObjectTemplate::New());
-    // An internal field holds the JSObjectScript*
-    mGlobalTemplate->SetInternalFieldCount(1);
-
-    // And we expose some functionality directly
-    v8::Handle<v8::ObjectTemplate> system_templ = v8::ObjectTemplate::New();
-    // An internal field holds the JSObjectScript*
-
-    system_templ->SetInternalFieldCount(1);
-
-    // Functions / types
-    system_templ->Set(v8::String::New("timeout"), v8::FunctionTemplate::New(JSSystem::ScriptTimeout));
-    system_templ->Set(v8::String::New("print"), v8::FunctionTemplate::New(JSSystem::Print));
-    system_templ->Set(v8::String::New("import"), v8::FunctionTemplate::New(JSSystem::ScriptImport));
-    system_templ->Set(v8::String::New("__test"), v8::FunctionTemplate::New(JSSystem::__ScriptGetTest));
-    system_templ->Set(v8::String::New("__broadcast"),v8::FunctionTemplate::New(JSSystem::__ScriptTestBroadcastMessage));
-
-    system_templ->Set(v8::String::New("reboot"),v8::FunctionTemplate::New(JSSystem::ScriptReboot));
-    system_templ->Set(v8::String::New("update_addressable"),v8::FunctionTemplate::New(JSSystem::ScriptUpdateAddressable));
-
-    system_templ->Set(v8::String::New("create_entity"), v8::FunctionTemplate::New(JSSystem::ScriptCreateEntity));
-    system_templ->Set(v8::String::New("create_presence"), v8::FunctionTemplate::New(JSSystem::ScriptCreatePresence));
-    
-
-    //these are mutable fields
-    system_templ->SetAccessor(JS_STRING(angularAxis), JSSystem::ScriptGetAxisOfRotation, JSSystem::ScriptSetAxisOfRotation);
-    system_templ->SetAccessor(JS_STRING(angularVelocity), JSSystem::ScriptGetAngularSpeed, JSSystem::ScriptSetAngularSpeed);
-
-    mVec3Template = v8::Persistent<v8::FunctionTemplate>::New(CreateVec3Template());
-    system_templ->Set(v8::String::New("Vec3"), mVec3Template);
-
-    mQuaternionTemplate = v8::Persistent<v8::FunctionTemplate>::New(CreateQuaternionTemplate());
-    system_templ->Set(v8::String::New("Quaternion"), mQuaternionTemplate);
-
-    mPatternTemplate = v8::Persistent<v8::FunctionTemplate>::New(CreatePatternTemplate());
-    system_templ->Set(JS_STRING(Pattern), mPatternTemplate);
-
-    /**
-       FIXME: need to add way to remove a handler.
-     **/
-    system_templ->Set(JS_STRING(registerHandler),v8::FunctionTemplate::New(JSSystem::ScriptRegisterHandler));
-    system_templ->Set(JS_STRING(sqrt),v8::FunctionTemplate::New(JSMath::ScriptSqrtFunction));
-    system_templ->Set(JS_STRING(acos),v8::FunctionTemplate::New(JSMath::ScriptAcosFunction));
-    system_templ->Set(JS_STRING(asin),v8::FunctionTemplate::New(JSMath::ScriptAsinFunction));
-    system_templ->Set(JS_STRING(cos),v8::FunctionTemplate::New(JSMath::ScriptCosFunction));
-    system_templ->Set(JS_STRING(sin),v8::FunctionTemplate::New(JSMath::ScriptSinFunction));
-    system_templ->Set(JS_STRING(rand),v8::FunctionTemplate::New(JSMath::ScriptRandFunction));
-    
-    mGlobalTemplate->Set(v8::String::New(JSSystemNames::ROOT_OBJECT_NAME), system_templ);
-}
-
-
-
-//creating the addressable template.  addressable is an array within system that 
+//creating the addressable template.  addressable is an array within system that
 void JSObjectScriptManager::createAddressableTemplate()
 {
     v8::HandleScope handle_scope;
@@ -251,17 +202,17 @@ void JSObjectScriptManager::createAddressableTemplate()
 void JSObjectScriptManager::createPresenceTemplate()
 {
   v8::HandleScope handle_scope;
-  
+
   // Ideally we want the addressable template to be a prototype of presencetemplate
   //All that can be done to presences can be done to the addressble too
-  
-  mPresenceTemplate = v8::Persistent<v8::ObjectTemplate>::New(v8::ObjectTemplate::New()); 
+
+  mPresenceTemplate = v8::Persistent<v8::ObjectTemplate>::New(v8::ObjectTemplate::New());
   mPresenceTemplate->SetInternalFieldCount(PRESENCE_FIELD_COUNT);
 
 
   //These are not just accessors because we need to ensure that we can deal with
   //their failure conditions.  (Have callbacks).
-  
+
   mPresenceTemplate->Set(v8::String::New("toString"), v8::FunctionTemplate::New(JSPresence::toString));
 
   //meshes
@@ -284,7 +235,17 @@ void JSObjectScriptManager::createPresenceTemplate()
   mPresenceTemplate->Set(v8::String::New("setOrientationVel"),v8::FunctionTemplate::New(JSPresence::setOrientationVel));
   mPresenceTemplate->Set(v8::String::New("getOrientationVel"),v8::FunctionTemplate::New(JSPresence::getOrientationVel));
 
-  
+  //scale
+  mPresenceTemplate->Set(v8::String::New("setScale"),v8::FunctionTemplate::New(JSPresence::setScale));
+  mPresenceTemplate->Set(v8::String::New("getScale"),v8::FunctionTemplate::New(JSPresence::getScale));
+
+  // Query angle
+  mPresenceTemplate->Set(v8::String::New("setQueryAngle"),v8::FunctionTemplate::New(JSPresence::setQueryAngle));
+
+  //set up graphics
+  mPresenceTemplate->Set(v8::String::New("runSimulation"),v8::FunctionTemplate::New(JSPresence::runSimulation));
+
+
   //FIXME:
   //add function to check if presences are equal (point to same underlying object);
   //add function to see if presence is valid (has been declared null);
@@ -311,12 +272,12 @@ void JSObjectScriptManager::createHandlerTemplate()
     mHandlerTemplate->Set(v8::String::New("clear"),v8::FunctionTemplate::New(JSHandler::__clear));
 }
 
-      
+
 JSObjectScriptManager::~JSObjectScriptManager()
 {
 }
 
-ObjectScript* JSObjectScriptManager::createObjectScript(HostedObjectPtr ho,const Arguments& args)
+ObjectScript* JSObjectScriptManager::createObjectScript(HostedObjectPtr ho, const String& args)
 {
     JSObjectScript* new_script = new JSObjectScript(ho, args, this);
     if (!new_script->valid()) {

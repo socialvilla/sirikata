@@ -34,9 +34,11 @@
 #define _SIRIKATA_PROXY_OBJECT_HPP_
 
 #include <sirikata/proxyobject/Platform.hpp>
+
+#include <sirikata/proxyobject/Defs.hpp>
+
 #include <sirikata/core/util/Extrapolation.hpp>
 #include <sirikata/core/util/SpaceObjectReference.hpp>
-#include "ProxyObjectListener.hpp"
 #include <sirikata/core/util/ListenerProvider.hpp>
 #include "PositionListener.hpp"
 
@@ -45,18 +47,40 @@
 
 #include "VWObject.hpp"
 
+#include <sirikata/core/transfer/TransferMediator.hpp>
+#include <sirikata/core/transfer/TransferPool.hpp>
+#include <sirikata/proxyobject/MeshListener.hpp>
+#include "MeshListener.hpp"
+#include "PhysicalParameters.hpp"
+
+
 namespace Sirikata {
 
-class ProxyObject;
-typedef std::tr1::shared_ptr<ProxyObject> ProxyObjectPtr;
-typedef std::tr1::weak_ptr<ProxyObject> ProxyObjectWPtr;
 
-typedef Provider<ProxyObjectListener*> ProxyObjectProvider;
-class ProxyManager;
+//forward declares
+class MeshListener;
+class PhysicalParameters;
+class ProxyObjectListener;
 
+
+//typedefs
 typedef double AbsTime;
-
 typedef Provider<PositionListener*> PositionProvider;
+typedef Provider<ProxyObjectListener*> ProxyObjectProvider;
+typedef Provider< MeshListener* > MeshProvider;
+
+
+
+
+/** Interface to listen for the destruction of a ProxyObject so one can discard any shared references to it. */
+class SIRIKATA_PROXYOBJECT_EXPORT ProxyObjectListener {
+public:
+    virtual ~ProxyObjectListener(){}
+    virtual void destroyed() = 0;
+};
+
+
+
 
 /**
  * This class represents a generic object on a remote server
@@ -68,7 +92,8 @@ typedef Provider<PositionListener*> PositionProvider;
 class SIRIKATA_PROXYOBJECT_EXPORT ProxyObject
     : public SelfWeakPtr<ProxyObject>,
       public ProxyObjectProvider,
-      public PositionProvider
+      public PositionProvider,
+      public MeshProvider
 {
 
 public:
@@ -92,6 +117,10 @@ private:
     ODP::Port* mDefaultPort; // Default port used to send messages to the object
                              // this ProxyObject represents
 
+    //added private members to proxy object from mesh object
+    Transfer::URI mMeshURI;
+    Vector3f mScale;
+    PhysicalParameters mPhysical;
 public:
     /** Constructs a new ProxyObject. After constructing this object, it
         should be wrapped in a shared_ptr and sent to ProxyManager::createObject().
@@ -135,7 +164,7 @@ public:
     {
         return Vector3d(mLoc.velocity());
     }
-    
+
     /// Returns the last updated Quaternion for this object.
     inline const Quaternion& getOrientation() const{
         return mOrientation.position();
@@ -146,7 +175,7 @@ public:
     inline const Quaternion& getOrientationSpeed() const{
         return mOrientation.velocity();
     }
-    
+
 
     inline const BoundingSphere3f& getBounds() const {
         return mBounds;
@@ -154,7 +183,7 @@ public:
 
 
     ~ProxyObject();
-    
+
     /// Gets the parent ProxyObject. This may return null!
     ProxyObjectPtr getParentProxy() const;
     /// Gets the owning Proxy
@@ -192,7 +221,7 @@ public:
     }
 
     bool sendMessage(const ODP::PortID& dest_port, MemoryReference message) const;
-    
+
     /** Retuns the local location of this object at the current timestamp. */
     Location extrapolateLocation(TemporalValue<Location>::Time current) const {
         Vector3f angaxis;
@@ -201,6 +230,15 @@ public:
 
         return Location(Vector3d(mLoc.position(current)), mOrientation.position(current).normal(), mLoc.velocity(), angaxis, angvel);
     }
+
+
+    // interface from MeshObject
+    virtual void setMesh ( Transfer::URI const& rhs );
+    virtual Transfer::URI const& getMesh () const;
+    virtual void setScale ( Vector3f const& rhs );
+    virtual Vector3f const& getScale () const;
+    virtual void setPhysical ( PhysicalParameters const& rhs );
+    virtual PhysicalParameters const& getPhysical () const;
 
 };
 }
