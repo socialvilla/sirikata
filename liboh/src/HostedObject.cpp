@@ -30,6 +30,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "SDL.h"
+#include "SDL_mixer.h"
+
 #include <sirikata/oh/Platform.hpp>
 #include <sirikata/core/task/WorkQueue.hpp>
 #include <sirikata/core/util/KnownServices.hpp>
@@ -63,12 +66,17 @@
 #include "Protocol_Loc.pbj.hpp"
 #include "Protocol_Prox.pbj.hpp"
 
+#include <sirikata/core/util/Sha256.hpp>
 
 #define HO_LOG(lvl,msg) SILOG(ho,lvl,"[HO] " << msg);
 
 namespace Sirikata {
 
-
+# define BUFFER_SIZE 65536
+Uint8 recAudio[BUFFER_SIZE];
+Uint32 recAudioLen;
+Uint8 sendAudioFlag = 0;
+Mix_Chunk *sound = NULL;
 
 HostedObject::HostedObject(ObjectHostContext* ctx, ObjectHost*parent, const UUID &objectName)
  : mContext(ctx),
@@ -79,7 +87,7 @@ HostedObject::HostedObject(ObjectHostContext* ctx, ObjectHost*parent, const UUID
     mObjectHost=parent;
     mObjectScript=NULL;
 
-
+    
     mDelegateODPService = new ODP::DelegateService(
         std::tr1::bind(
             &HostedObject::createDelegateODPPort, this,
@@ -88,25 +96,23 @@ HostedObject::HostedObject(ObjectHostContext* ctx, ObjectHost*parent, const UUID
     );
 }
 
-
 //Need to define this function so that can register timeouts in jscript
 Network::IOService* HostedObject::getIOService()
 {
     return mContext->ioService;
 }
 
-
 void HostedObject::runSimulation(const SpaceObjectReference& sporef, const String& simName)
 {
     TimeSteppedSimulation* sim = NULL;
-
+    
     SpaceDataMap::iterator psd_it = mSpaceData->find(sporef);
     if (psd_it == mSpaceData->end())
     {
         std::cout<<"\n\nERROR: should have an entry for this space object reference in spacedatamap.  Aborting.\n\n";
         assert(false);
     }
-
+    
     PerPresenceData& pd =  psd_it->second;
     addSimListeners(pd,simName,sim);
 
@@ -171,7 +177,7 @@ ProxyManagerPtr HostedObject::getProxyManager(const SpaceID& space, const Object
         // ).first;
         ProxyManagerPtr returner;
         return returner;
-
+        
     }
     return it->second.proxyManager;
 }
@@ -211,7 +217,7 @@ ProxyObjectPtr HostedObject::getProxy(const SpaceID& space, const ObjectReferenc
     ProxyManagerPtr proxy_manager = getProxyManager(space,oref);
     if (proxy_manager == nullManPtr)
         return nullPtr;
-
+    
     ProxyObjectPtr  proxy_obj = proxy_manager->getProxyObject(SpaceObjectReference(space,oref));
     return proxy_obj;
 }
@@ -233,7 +239,7 @@ void HostedObject::initializeScript(const String& script, const String& args)
     }
 
     SILOG(oh,debug,"[OH] Creating a script object for " << getUUID().toString() << "(internal id)");
-
+    
     static ThreadIdCheck scriptId=ThreadId::registerThreadGroup(NULL);
     assertThreadGroup(scriptId);
     if (!ObjectScriptManagerFactory::getSingleton().hasConstructor(script)) {
@@ -369,7 +375,7 @@ void HostedObject::handleConnectedIndirect(const SpaceID& space, const ObjectRef
             );
         }
     }
-
+    
     // Convert back to local time
     TimedMotionVector3f local_loc(localTime(space, info.loc.updateTime()), info.loc.value());
     TimedMotionQuaternion local_orient(localTime(space, info.orient.updateTime()), info.orient.value());
@@ -441,7 +447,7 @@ bool HostedObject::handleScriptInitMessage(const ODP::Endpoint& src, const ODP::
 
 
     bool parsed = sMessage.ParseFromArray(bodyData.data(),bodyData.size());
-
+    
     if (! parsed)
         return false;
 
@@ -455,7 +461,7 @@ bool HostedObject::handleScriptInitMessage(const ODP::Endpoint& src, const ODP::
 
     if (messager != KnownMessages::INIT_SCRIPT)
         return false;
-
+    
     if (scriptType == ScriptTypes::JS_SCRIPT_TYPE)
     {
         initializeScript(scriptType,"");
@@ -485,7 +491,7 @@ void HostedObject::receiveMessage(const SpaceID& space, const Protocol::Object::
 
     if (mDelegateODPService->deliver(src_ep, dst_ep, MemoryReference(msg->payload()))) {
         // if this was true, it got delivered
-
+        
         delete msg;
     }
     else if (handleScriptInitMessage(src_ep,dst_ep,MemoryReference(msg->payload())))
@@ -569,9 +575,10 @@ bool HostedObject::handleLocationMessage(const SpaceObjectReference& spaceobj, c
     {
         return true;
     }
-
+    
     for(int32 idx = 0; idx < contents.update_size(); idx++) {
         Sirikata::Protocol::Loc::LocationUpdate update = contents.update(idx);
+
 
         ProxyManagerPtr proxy_manager = getProxyManager(spaceobj.space(), spaceobj.object());
         ProxyObjectPtr proxy_obj = proxy_manager->getProxyObject(SpaceObjectReference(spaceobj.space(), ObjectReference(update.object())));
@@ -645,7 +652,7 @@ bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, 
             }
 
 
-
+            
             if (!getProxyManager(spaceobj.space(),spaceobj.object())->getProxyObject(proximateID)) {
                 TimedMotionQuaternion orient(localTime(space, addition.orientation().t()), MotionQuaternion(addition.orientation().position(), addition.orientation().velocity()));
 
@@ -665,7 +672,7 @@ bool HostedObject::handleProximityMessage(const SpaceObjectReference& spaceobj, 
 
                 if (!proxy_obj)
                     continue;
-
+                
                 proxy_obj->setMesh(Transfer::URI(addition.mesh()));
             }
         }
@@ -815,7 +822,10 @@ bool HostedObject::delegateODPPortSend(const ODP::Endpoint& source_ep, const ODP
 void HostedObject::requestLocationUpdate(const SpaceID& space, const ObjectReference& oref, const TimedMotionVector3f& loc)
 {
     sendLocUpdateRequest(space, oref,&loc, NULL, NULL, NULL);
-		pingSpace (space, oref);
+//		if (!sendAudioFlag) {
+			pingSpace (space, oref);
+//			sendAudioFlag = 1;
+//		}
 }
 
 //only update the position of the object, leave the velocity and orientation unaffected
@@ -892,7 +902,7 @@ Vector3d HostedObject::requestCurrentPosition (const SpaceID& space, const Objec
 //apparently, will always return true now.  even if camera.
 bool HostedObject::requestMeshUri(const SpaceID& space, const ObjectReference& oref, Transfer::URI& tUri)
 {
-
+    
     ProxyManagerPtr proxy_manager = getProxyManager(space,oref);
     ProxyObjectPtr  proxy_obj     = proxy_manager->getProxyObject(SpaceObjectReference(space,oref));
 
@@ -989,31 +999,172 @@ void HostedObject::sendLocUpdateRequest(const SpaceID& space, const ObjectRefere
     }
 }
 
+
+Mix_Chunk * loadMixChunk (char *file) {
+    Mix_Chunk *chunk;
+    SDL_AudioSpec wavespec;
+    SDL_AudioCVT wavecvt;
+    int samplesize;
+
+    /* Allocate the chunk memory */
+    chunk = (Mix_Chunk *)malloc(sizeof(Mix_Chunk));
+    if ( chunk == NULL ) {
+      SDL_SetError("Out of memory");
+      return NULL;
+    }
+
+    if ( SDL_LoadWAV(file, &wavespec, (Uint8 **)&chunk->abuf, &chunk->alen) == NULL ) {
+      return NULL;
+    }
+
+    SDL_BuildAudioCVT(&wavecvt, wavespec.format, wavespec.channels, wavespec.freq,
+                              AUDIO_S16,   2,             22050);
+
+    samplesize = ((wavespec.format & 0xFF)/8)*wavespec.channels;
+    wavecvt.len = chunk->alen & ~(samplesize-1);
+    wavecvt.buf = (Uint8 *)malloc(wavecvt.len*wavecvt.len_mult);
+    if ( wavecvt.buf == NULL ) {
+      SDL_SetError("Out of memory");
+      SDL_FreeWAV(chunk->abuf);
+      free(chunk);
+      return(NULL);
+    }
+    memcpy(wavecvt.buf, chunk->abuf, chunk->alen);
+    SDL_FreeWAV(chunk->abuf);
+    /* Run the audio converter */
+
+    if ( SDL_ConvertAudio(&wavecvt) < 0 ) {
+      free(wavecvt.buf);
+      free(chunk);
+      return(NULL);
+    }
+    chunk->allocated = 1;
+    chunk->abuf = wavecvt.buf;
+    chunk->alen = wavecvt.len_cvt;
+    chunk->volume = MIX_MAX_VOLUME;
+    return chunk;
+}
+
+
+
 // Test: Ping space server
 void HostedObject::pingSpace (const SpaceID& space, const ObjectReference& oref) {
 		std::string payload = "Hello Space";
+
+		std::string fileName = "/tmp/samp.wav";
+		Uint8 *txData = (Uint8 *) payload.data();
+		Uint32 dataLen = payload.size();
+
+		/*************** Load the WAV file ******************/
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
+      SILOG(msg, warning, "Unable to initialize SDL: " << SDL_GetError());
+    }
+  
+    int audio_rate = 22050;
+    Uint16 audio_format = AUDIO_S16SYS;
+    int audio_channels = 2;
+    int audio_buffers = 4096;
+  
+    if(Mix_OpenAudio(audio_rate, audio_format, audio_channels, audio_buffers) != 0) {
+      SILOG(msg, warning, "Unable to initialize audio : " << Mix_GetError());
+    }
+		/*************** Load the WAV file ******************/
+ 
+		//SDL_PauseAudio (0);
+ 
+    //sound = Mix_LoadWAV("/tmp/samp.wav");
+		sound = loadMixChunk(((char *)fileName.c_str()));
+    if(sound == NULL) {
+      SILOG(msg, warning, "Unable to load WAV file: " << Mix_GetError());
+    } else {
+
+/****************************
+      int channel = Mix_PlayChannel(-1, sound, 0);
+      if(channel == -1) {
+        SILOG(oh, warning, "Unable to play WAV file: " << Mix_GetError());
+      }
+      while(Mix_Playing(channel) != 0);
+****************************/
+
+			SILOG(msg, warning, "\n\n\n\n\n\nSending the sound data. Total length = " << sound->alen);
+			txData = sound->abuf;
+			dataLen = sound->alen;
+		}
+		/****************************************************/
+
+		recAudioLen = 0;
 		SSTStreamPtr spaceStream = mObjectHost->getSpaceStream(space, getUUID());
     if (spaceStream != SSTStreamPtr()) {
-/*        SSTConnectionPtr conn = spaceStream->connection().lock();
-        assert(conn);
 
-        conn->datagram( (void*)payload.data(), payload.size(), OBJECT_PORT_AUDIO,
-            OBJECT_PORT_AUDIO, NULL);
-*/
-
-				SILOG(oh,warn,"\n\n\n\n\n\n\n\n[OH] Sending a message to space server. \n\n\n\n");
+				SILOG(oh,warn,"\n[OH] Sending a message to space server. \n");
 				spaceStream->createChildStream (
 						std::tr1::bind(&HostedObject::audioSubstreamCallback, this, _1, _2, spaceStream, payload),
-        		(void*)payload.data(), payload.size(),
+        		(void*)txData, dataLen,
         		OBJECT_PORT_AUDIO, OBJECT_PORT_AUDIO
 				);
+/*						std::tr1::bind(&HostedObject::audioSubstreamCallback, this, _1, _2, spaceStream, payload),
+        		(void*)payload.data(), payload.size(),
+        		OBJECT_PORT_AUDIO, OBJECT_PORT_AUDIO
+*/
     }
 }
 
 void HostedObject::audioSubstreamCallback(int x, SSTStreamPtr substream, SSTStreamPtr spaceStream, std::string msg) {
-				SILOG(oh,warn,"\n\n\n\n\n\n\n\n[OH] Received callback. \n\n\n\n");
+		SILOG(oh,warn,"[OH] Received callback. \n");
+		substream->registerReadCallback( std::tr1::bind(&HostedObject::handleSubstreamRead, this, substream, new std::stringstream(), _1, _2) );
 }
 
+
+void HostedObject::handleSubstreamRead(SSTStreamPtr s, std::stringstream* prevdata, uint8* buffer, int length) {
+
+/*		char str[100];
+		memcpy (str, buffer, length);
+		str[length] = '\0';
+		SILOG(oh, warning, "\n Received string = " << str);
+		return;
+*/
+
+    if (recAudioLen + length <= BUFFER_SIZE) {
+      memcpy (recAudio + recAudioLen, buffer, length);
+      recAudioLen += length;
+    } else {
+
+		  SHA256 hash = SHA256::computeDigest (recAudio, recAudioLen);
+		  SILOG(oh, warning, "mixed data hash : " << hash.convertToHexString());
+
+/******************** Playback received data ************************/
+      SILOG(oh, warning, "\nPlaying to channel . length of stream = " << recAudioLen);
+			SDL_PauseAudio (0);
+      Mix_Chunk *chunk = NULL;
+      chunk = (Mix_Chunk *)malloc(sizeof(Mix_Chunk));
+      if ( chunk == NULL ) {
+        SILOG(oh, warning, "Out of memory");
+        return;
+      }
+
+      chunk->allocated = 1;
+      chunk->abuf = (Uint8 *) malloc (recAudioLen+1);
+      memcpy(chunk->abuf, recAudio, recAudioLen);
+      chunk->alen = recAudioLen;
+      chunk->volume = MIX_MAX_VOLUME;
+
+			int channel;
+			channel = Mix_PlayChannel(-1, chunk, 0);
+      if(channel == -1) {
+        SILOG(oh, warning, "Unable to play WAV file: " << Mix_GetError());
+      }
+      SILOG(oh, warning, "\n\n\n Sending received data to audio device at channel : " << channel);
+			while(Mix_Playing(channel) != 0);
+      Mix_FreeChunk(chunk);
+			SDL_PauseAudio (1);
+/******************** Playback received data ************************/
+			recAudioLen = 0;
+			memset (recAudio, 0, BUFFER_SIZE);
+      memcpy (recAudio, buffer, length);
+      recAudioLen += length;
+    }
+//    prevdata->write((const char*)buffer, length);
+}
 
 Location HostedObject::getLocation(const SpaceID& space, const ObjectReference& oref)
 {
@@ -1063,7 +1214,7 @@ void HostedObject::EntityState::persistToFile(std::ofstream& fp)
 	 fp << orient.x << "," << orient.y << "," << orient.z << "," << orient.w << "," ;
 
 	 /* persist the velocity */
-
+	 
 	 fp << vel.x << "," << vel.y << "," << vel.z << "," ;
 
 	 /* persist the rotation */
@@ -1077,8 +1228,8 @@ void HostedObject::EntityState::persistToFile(std::ofstream& fp)
 	 /*  persist the mesh url*/
 
 	 fp << "\"" << mesh << "\""  << "," ;
-
-
+   
+	 
 	 /* persist the scale */
 
 	 fp << scale << ",";
@@ -1087,8 +1238,8 @@ void HostedObject::EntityState::persistToFile(std::ofstream& fp)
 	 /* persist the object id */
 
 	 fp << objectID << ",";
-
-
+	 
+	 
 	 fp << script_type << ",";
 
 
@@ -1103,11 +1254,11 @@ HostedObject::EntityState* HostedObject::getEntityState(const SpaceID& space, co
     ProxyObjectPtr poptr = getProxy(space, oref);
 
 
-
+    
     Location loc = getLocation(space, oref);
     es->objType = "mesh";
     es->subType = "graphiconly";
-
+  
     // FIXME : HostedObject does not take the name of the entity into account right now after reading from the scene file.
     es->name = "unknown";
     es->pos = loc.getPosition();
@@ -1124,7 +1275,7 @@ HostedObject::EntityState* HostedObject::getEntityState(const SpaceID& space, co
     std::cout<<poptr->getMesh();
     std::cout<<"\n\n";
     std::cout.flush();
-
+    
     es->mesh = poptr->getMesh().toString();
 
 

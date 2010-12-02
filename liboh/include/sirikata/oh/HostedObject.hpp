@@ -81,7 +81,7 @@ protected:
      struct EntityState
      {
        public:
-
+         
          String objType;
          String subType;
          String name;
@@ -92,14 +92,14 @@ protected:
          float angular_speed;
          String mesh;
          float scale;
-         String objectID;
+         String objectID; 
          String script_type;
          String script_opts;
          void persistToFile(std::ofstream&);
-
+         
      };
      typedef struct EntityState EntityState;
-
+	  
   private:
     //SpaceSet mSpaces;
 
@@ -123,7 +123,7 @@ protected:
     typedef SSTConnection::Ptr SSTConnectionPtr;
 
 
-
+    
 
     // FIXME maintain a proper map here or put in per-presence data
     std::vector<BaseDatagramLayerPtr> mSSTDatagramLayers;
@@ -149,13 +149,15 @@ public:
 
 		/* Audio test */
 		void audioSubstreamCallback(int x, SSTStreamPtr substream, SSTStreamPtr spaceStream, std::string msg);
+    virtual void pingSpace (const SpaceID& space, const ObjectReference& oref);
+    void handleSubstreamRead(SSTStreamPtr s, std::stringstream* prevdata, uint8* buffer, int length);
 
 
     /** Get a set of spaces the object is currently connected to. */
     typedef std::set<SpaceObjectReference> SpaceObjRefSet;
     void getSpaceObjRefs(SpaceObjRefSet& ss) const;
 
-
+    
 
 //------- Public member functions:
     ObjectHostContext* context() { return mContext; }
@@ -169,10 +171,11 @@ public:
     ///makes a new objects with objectName startingLocation mesh and connect to some interesting space
     void initializeScript(const String& script, const String& args);
 
+
     bool handleScriptInitMessage(const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference bodyData);
     void processInitScriptMessage(MemoryReference& body);
     bool handleScriptMessage(const ODP::Endpoint& src, const ODP::Endpoint& dst, MemoryReference bodyData);
-
+    
     /// Attempt to restore this item from database including script
     //void initializeRestoreFromDatabase(const SpaceID&spaceID);
 
@@ -182,8 +185,8 @@ public:
     void init();
     void addSimListeners(PerPresenceData& pd, const String& oh_sims,    TimeSteppedSimulation*& sim);
 
-
-
+    
+    
     /** Removes this HostedObject from the ObjectHost, and destroys the internal shared pointer
       * Safe to reuse for another connection, as long as you hold a shared_ptr to this object.
       */
@@ -199,11 +202,10 @@ public:
     const ProxyObjectPtr &getProxyConst(const SpaceID& space, const ObjectReference& oref) const;
 
 public:
-
+ 
     ObjectReference getObjReference(const SpaceID& space);
 
     void runSimulation(const SpaceObjectReference& sporef, const String& simName);
-
 
 
     /** Returns the internal object reference, which can be used for connecting
@@ -213,12 +215,12 @@ public:
     const UUID &getUUID() const {
         return mInternalObjectReference;
     }
-
+    
 
     virtual ProxyManagerPtr getProxyManager(const SpaceID& space,const ObjectReference& oref);
     virtual ProxyManagerPtr getDefaultProxyManager(const SpaceID& space);
     virtual ProxyObjectPtr  getDefaultProxyObject(const SpaceID& space);
-
+    
     /** Called once per frame, at a certain framerate. */
     void tick();
 
@@ -270,7 +272,7 @@ public:
   public:
     /// Disconnects from the given space by terminating the corresponding substream.
     void disconnectFromSpace(const SpaceID &spaceID, const ObjectReference& oref);
-
+    
     /// Receive an ObjectMessage from the space via the ObjectHost. Translate it
     /// to our runtime ODP structure and deliver it.
     void receiveMessage(const SpaceID& space, const Protocol::Object::ObjectMessage* msg);
@@ -279,7 +281,7 @@ public:
   public:
     void updateAddressable();
 
-
+    
     std::tr1::shared_ptr<HostedObject> getSharedPtr() {
         return std::tr1::static_pointer_cast<HostedObject>(this->VWObject::getSharedPtr());
     }
@@ -305,13 +307,12 @@ public:
     virtual ODP::Port* bindODPPort(const SpaceObjectReference& sor);
     virtual void registerDefaultODPHandler(const ODP::MessageHandler& cb);
 
-
     // Movement Interface
     //note: location update services both position and velocity
 
     virtual void requestLocationUpdate(const SpaceID& space, const ObjectReference& oref,const TimedMotionVector3f& loc);
 
-
+    
     virtual void requestPositionUpdate(const SpaceID& space, const ObjectReference& oref, const Vector3f& pos);
     virtual void requestVelocityUpdate(const SpaceID& space, const ObjectReference& oref, const Vector3f& vel);
 

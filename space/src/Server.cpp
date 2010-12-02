@@ -78,6 +78,9 @@ Server::Server(SpaceContext* ctx, Forwarder* forwarder, LocationService* loc_ser
     mContext->mCSeg = mCSeg;
     mContext->mObjectSessionManager = this;
 
+		if (mAudioService) {
+			this->addListener((ObjectSessionListener*)mAudioService);
+		}
     this->addListener((ObjectSessionListener*)mLocationService);
     this->addListener((ObjectSessionListener*)mProximity);
 

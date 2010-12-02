@@ -30,15 +30,31 @@
 #ifndef _SIRIKATA_AUDIO_SERVICE_HPP_
 #define _SIRIKATA_AUDIO_SERVICE_HPP_
 
+#include "SDL.h"
+#include "SDL_mixer.h"
+#include <map>
 #include <sirikata/space/SpaceContext.hpp>
 #include <sirikata/space/ServerMessage.hpp>
 #include <sirikata/core/network/SSTImpl.hpp>
 #include <sirikata/space/Platform.hpp>
 #include <sirikata/core/util/Factory.hpp>
+#include <sirikata/core/util/Sha256.hpp>
+
+using namespace std;
 
 namespace Sirikata {
 
+# define BUFFER_SIZE 65536
+# define MAX_CHANNELS 8
+
 class AudioService;
+
+#define NUM_SOUNDS 2
+struct sample {
+    Uint8 *data;
+    Uint32 dpos;
+    Uint32 dlen;
+} sounds[NUM_SOUNDS];
 
 /** Interface for audio service.  This provides a way for the local object hosts 
  *  to get the mixed audio stream. 
@@ -56,6 +72,8 @@ public:
     const SpaceContext* context() const {
         return mContext;
     }
+
+//		Mix_Chunk * loadMixChunk (char *file);
 
     // ObjectSessionListener Interface
     void newSession(ObjectSession* session);
@@ -87,8 +105,46 @@ public:
         return session->getStream();
     }
 
+    typedef struct {
+      SSTStreamPtr objStream;
+      short channelID;
+			short valid;
+    } registeredObject;
+
+		typedef map<UUID, registeredObject> ObjectStreamMap;
+    static ObjectStreamMap objStreamMap;
+
+		UUID getUUID (SSTStreamPtr s);
+		registeredObject memObjectStreamMap (SSTStreamPtr s);
+		short getFreeChannel();
+		void freeChannel(short channelNum);
+
+		// Extracted SDL_mixer code
+		int ActiveMixChannels(); 
+		void MixChannels();
+		int MixChannelNew(int which, Mix_Chunk *chunk);
+		void MixChannelDel(int which);
+		void MixChannelsInit ();
+
 protected:
     SpaceContext* mContext;
+		Uint8 recAudio[BUFFER_SIZE];
+		Uint32 recAudioLen;
+
+		Uint8 numActiveChannels;
+		short audioChannels[MAX_CHANNELS];
+	
+		struct _Mix_Channel {
+		  Mix_Chunk *chunk;
+		  int playing;
+		  int paused;
+		  Uint8 *samples;
+		  int volume;
+		} *mix_channel;
+		
+		int num_channels;
+		int num_playing_channels;
+		void (*mix_postmix)(void *udata, Uint8 *stream, int len);
 
 }; // class AudioService
 
