@@ -559,8 +559,8 @@ void Server::handleConnectAuthResponse(const ObjectHostConnectionManager::Connec
     // same object ID.
     if (isObjectConnected(obj_id) || isObjectConnecting(obj_id)) {
         // Decide whether this is a conflict or a retry
-        ObjectConnection* existing_conn = mObjects[obj_id];
-        if (existing_conn->connID() == oh_conn_id) {
+        ObjectConnectionMap::iterator existing_conn = mObjects.find(obj_id);
+        if (existing_conn!=mObjects.end() && existing_conn->second->connID() == oh_conn_id) {
             // retry, tell them they're fine.
             sendConnectSuccess(oh_conn_id, obj_id);
         }

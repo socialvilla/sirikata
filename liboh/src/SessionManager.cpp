@@ -324,7 +324,7 @@ void SessionManager::stop() {
     }
 }
 
-void SessionManager::connect(
+bool SessionManager::connect(
     const SpaceObjectReference& sporef_objid,
     const TimedMotionVector3f& init_loc, const TimedMotionQuaternion& init_orient, const BoundingSphere3f& init_bounds,
     bool regQuery, const SolidAngle& init_sa, uint32 init_max_results,
@@ -334,6 +334,10 @@ void SessionManager::connect(
 )
 {
     Sirikata::SerializationCheck::Scoped sc(&mSerialization);
+
+    if (mObjectConnections.exists(sporef_objid)) {
+        return false;
+    }
 
     using std::tr1::placeholders::_1;
     using std::tr1::placeholders::_2;
@@ -375,6 +379,7 @@ void SessionManager::connect(
     getAnySpaceConnection(
         std::tr1::bind(&SessionManager::openConnectionStartSession, this, sporef_objid, _1)
     );
+    return true;
 }
 
 void SessionManager::disconnect(const SpaceObjectReference& sporef_objid) {
