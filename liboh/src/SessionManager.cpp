@@ -254,6 +254,7 @@ void SessionManager::ObjectConnections::handleUnderlyingDisconnect(ServerID sid,
 void SessionManager::ObjectConnections::disconnectWithCode(const SpaceObjectReference& sporef, const SpaceObjectReference& connectedAs, Disconnect::Code code) {
     ///DO NOT reorder this copy. connectedAs may come from a MFD item (eg remove(sporef will invalidate connectedAs) )
     SpaceObjectReference tmp_sporef=connectedAs==SpaceObjectReference::null()?sporef:connectedAs;
+
     //end DO NOT reorder :-) everything after this point should be ok.
     if (mObjectInfo.find(sporef)!=mObjectInfo.end()) {
         DisconnectedCallback disconFunc=mObjectInfo[sporef].disconnectedCB;
@@ -472,6 +473,12 @@ void SessionManager::disconnect(const SpaceObjectReference& sporef_objid) {
         serializePBJMessage(session_msg),
         connected_to, mContext->mainStrand, Duration::seconds(0.05)
     );
+    if (mObjectToSpaceStreams.find(sporef_objid.object()) != mObjectToSpaceStreams.end())
+    {
+        SESSION_LOG(detailed, "deleting object-space streams  of " << sporef_objid);
+        mObjectToSpaceStreams[sporef_objid.object()]->connection().lock()->close(true);
+        mObjectToSpaceStreams.erase(sporef_objid.object());
+    }
 
     // Notify of disconnect (requested), then remove
     mObjectConnections.gracefulDisconnect(sporef_objid);

@@ -485,21 +485,18 @@ bool HostedObject::addSimListeners(PerPresenceData& pd, const String& simName,Ti
 void HostedObject::handleConnected(const HostedObjectWPtr& weakSelf, const SpaceID& space, const ObjectReference& obj, ObjectHost::ConnectionInfo info)
 {
     HostedObjectPtr self(weakSelf.lock());
-    if ((!self)||self->stopped()) {
+    if ((!self)) {
         HO_LOG(detailed,"Ignoring connection success after system stop requested.");
         return;
     }
-    if (info.server == NullServerID)
-    {
-        HO_LOG(warning,"Earlier failure to connect object:" << obj << " to space " << space);
-        return;
+    BaseDatagramLayerPtr baseDatagramLayer;
 
+    if (self->stopped()==false&&info.server != NullServerID) {
+        baseDatagramLayer =BaseDatagramLayerPtr(self->mContext->sstConnMgr()->createDatagramLayer(
+                                                    SpaceObjectReference(space, obj),
+                                                    self->mContext, self->mDelegateODPService
+                                                    )   );
     }
-    BaseDatagramLayerPtr baseDatagramLayer (self->mContext->sstConnMgr()->createDatagramLayer(
-              SpaceObjectReference(space, obj),
-              self->mContext, self->mDelegateODPService
-           )   );
-
     // We have to manually do what mContext->mainStrand->wrap( ... ) should be
     // doing because it can't handle > 5 arguments.
     self->mContext->mainStrand->post(
@@ -510,11 +507,6 @@ void HostedObject::handleConnected(const HostedObjectWPtr& weakSelf, const Space
 
 void HostedObject::handleConnectedIndirect(const HostedObjectWPtr& weakSelf, const SpaceID& space, const ObjectReference& obj, ObjectHost::ConnectionInfo info, const BaseDatagramLayerPtr& baseDatagramLayer)
 {
-    if (info.server == NullServerID)
-    {
-        HO_LOG(warning,"Failed to connect object:" << obj << " to space " << space);
-        return;
-    }
     HostedObjectPtr self(weakSelf.lock());
     if (!self)
         return;
@@ -540,6 +532,22 @@ void HostedObject::handleConnectedIndirect(const HostedObjectWPtr& weakSelf, con
     self->initializePerPresenceData(psd, self_proxy);
 
     HO_LOG(detailed,"Connected object " << obj << " to space " << space << " waiting on notice");
+    if (self->stopped()||info.server == NullServerID) {
+        SSTStreamPtr streamPtr = self->mObjectHost->getSpaceStream(space, obj);
+        if (streamPtr)
+            streamPtr->close(true);//try to eliminate repeated 'Tried to send message when not connected' errors
+        self->disconnectFromSpace(space,obj);
+    }
+    if (self->stopped()) {
+        HO_LOG(detailed,"Ignoring connection success after system stop requested.");
+        return;
+    }
+    if (info.server == NullServerID)
+    {
+        HO_LOG(warning,"Earlier failure to connect object:" << obj << " to space " << space);
+        return;
+
+    }
 }
 
 void HostedObject::handleMigrated(const HostedObjectWPtr& weakSelf, const SpaceID& space, const ObjectReference& obj, ServerID server)
@@ -590,11 +598,12 @@ void HostedObject::initializePerPresenceData(PerPresenceData& psd, ProxyObjectPt
 
 void HostedObject::disconnectFromSpace(const SpaceID &spaceID, const ObjectReference& oref)
 {
+/*
     if (stopped()) {
         HO_LOG(detailed,"Ignoring disconnection request after system stop requested.");
         return;
     }
-
+*/
     SpaceObjectReference sporef(spaceID, oref);
 
     PresenceDataMap::iterator where;
@@ -613,8 +622,10 @@ void HostedObject::disconnectFromSpace(const SpaceID &spaceID, const ObjectRefer
 }
 
 void HostedObject::handleDisconnected(const HostedObjectWPtr& weakSelf, const SpaceObjectReference& spaceobj, Disconnect::Code cc) {
-    HostedObjectPtr self(weakSelf.lock());
+    HostedObjectPtr self(weakSelf.lock());//FIXME: does this need to happen on the mainStrand?
     if ((!self)||self->stopped()) {
+        if (self)
+            self->mObjectHost->unregisterHostedObject(spaceobj, self.get());
         HO_LOG(detailed,"Ignoring disconnection callback after system stop requested.");
         return;
     }
