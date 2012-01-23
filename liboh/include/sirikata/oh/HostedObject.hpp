@@ -107,6 +107,8 @@ protected:
 private:
     friend class ::Sirikata::SelfWeakPtr<VWObject>;
     friend class PerPresenceData;
+    AtomicValue<int> mNumOutstandingConnections;
+    bool mDestroyWhenConnected;
 /// Private: Use "SelfWeakPtr<HostedObject>::construct(ObjectHost*)"
     /** Create a new HostedObject. script_type and script_opts are treated as
      * "use defaults" if you pass NULL and "use no script" if you pass empty
