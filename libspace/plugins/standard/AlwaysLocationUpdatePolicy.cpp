@@ -104,7 +104,8 @@ void AlwaysLocationUpdatePolicy::reportStats() {
 
 void AlwaysLocationUpdatePolicy::subscribe(ServerID remote, const UUID& uuid, SeqNoPtr seqnoPtr)
 {
-    mServerSubscriptions.subscribe(remote, uuid, seqnoPtr);
+    if (validSubscriber(remote))
+        mServerSubscriptions.subscribe(remote, uuid, seqnoPtr);
 }
 
 void AlwaysLocationUpdatePolicy::unsubscribe(ServerID remote, const UUID& uuid) {
@@ -116,7 +117,8 @@ void AlwaysLocationUpdatePolicy::unsubscribe(ServerID remote) {
 }
 
 void AlwaysLocationUpdatePolicy::subscribe(const OHDP::NodeID& remote, const UUID& uuid) {
-    mOHSubscriptions.subscribe(remote, uuid, mLocService->context()->ohSessionManager()->getSession(remote)->seqNoPtr());
+    if (validSubscriber(remote))
+        mOHSubscriptions.subscribe(remote, uuid, mLocService->context()->ohSessionManager()->getSession(remote)->seqNoPtr());
 }
 
 void AlwaysLocationUpdatePolicy::unsubscribe(const OHDP::NodeID& remote, const UUID& uuid) {
@@ -128,7 +130,8 @@ void AlwaysLocationUpdatePolicy::unsubscribe(const OHDP::NodeID& remote) {
 }
 
 void AlwaysLocationUpdatePolicy::subscribe(const UUID& remote, const UUID& uuid) {
-    mObjectSubscriptions.subscribe(remote, uuid, mLocService->context()->objectSessionManager()->getSession(ObjectReference(remote))->getSeqNoPtr());
+    if (validSubscriber(remote))
+        mObjectSubscriptions.subscribe(remote, uuid, mLocService->context()->objectSessionManager()->getSession(ObjectReference(remote))->getSeqNoPtr());
 }
 
 void AlwaysLocationUpdatePolicy::unsubscribe(const UUID& remote, const UUID& uuid) {
@@ -291,6 +294,22 @@ bool AlwaysLocationUpdatePolicy::validSubscriber(const ServerID& dest) {
     // subscribers since we should always be able to connect to them and send
     // updates.
     return true;
+}
+
+
+bool AlwaysLocationUpdatePolicy::isSelfSubscriber(const UUID& sid, const UUID& observed) {
+    return sid == observed;
+}
+
+bool AlwaysLocationUpdatePolicy::isSelfSubscriber(const OHDP::NodeID& sid, const UUID& observed) {
+    // TODO(ewencp) we could do better here by only returning true if the
+    // observed object is on the given OH.
+    return true;
+}
+
+bool AlwaysLocationUpdatePolicy::isSelfSubscriber(const ServerID& sid, const UUID& observed) {
+    // Servers never need self info since they don't request changes
+    return false;
 }
 
 bool AlwaysLocationUpdatePolicy::trySend(const UUID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu)

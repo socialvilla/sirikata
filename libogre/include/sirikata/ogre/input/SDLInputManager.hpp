@@ -34,7 +34,6 @@ extern "C" typedef Sirikata::uint32 SDL_WindowID;
 extern "C" typedef void* SDL_GLContext;
 extern "C" typedef union SDL_Event SDL_Event;
 
-#include <sirikata/ogre/task/EventManager.hpp>
 #include <sirikata/ogre/input/InputManager.hpp>
 
 namespace Sirikata {
@@ -71,6 +70,7 @@ typedef std::tr1::shared_ptr<SDLKeyRepeatInfo> SDLKeyRepeatInfoPtr;
 
 class SIRIKATA_OGRE_EXPORT SDLInputManager : public InputManager {
     Graphics::OgreRenderer* mParent;
+    bool mInitialized;
     SDL_WindowID mWindowID;
     SDL_GLContext mWindowContext;
     std::vector<SDLKeyboardPtr> mKeys;

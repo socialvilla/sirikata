@@ -84,10 +84,9 @@ uint32 OgreRenderer::sNumOgreSystems=0;
 
 namespace {
 
-// FIXME we really need a better way to figure out where our data is
-// This is a generic search method. It searches upwards from the current
-// directory for any of the specified files and returns the first path it finds
-// that contains one of them.
+// This is a generic search method. It searches upwards from the
+// directory containing the executable for any of the specified files
+// and returns the first path it finds that contains one of them.
 std::string findResource(boost::filesystem::path* search_paths, uint32 nsearch_paths, const std::vector<String>&searchPoints, bool want_dir = true, const std::string& start_path = ".", boost::filesystem::path default_ = boost::filesystem::complete(boost::filesystem::path("."))) {
     using namespace boost::filesystem;
 
@@ -126,7 +125,6 @@ std::string findResource(boost::filesystem::path* search_paths, uint32 nsearch_p
     return default_.string();
 }
 
-// FIXME we really need a better way to figure out where our data is
 std::string getOgreResourcesDir(const std::vector<String>&searchPoints) {
     using namespace boost::filesystem;
 
@@ -135,15 +133,15 @@ std::string getOgreResourcesDir(const std::vector<String>&searchPoints) {
     // and what's in the source tree.
     path search_paths[] = {
         path("ogre/data"),
-        path("share/ogre/data"),
-        path("libproxyobject/plugins/ogre/data")
+        path("share/sirikata/ogre/data"),
+        path("liboh/plugins/ogre/data")
     };
     uint32 nsearch_paths = sizeof(search_paths)/sizeof(*search_paths);
 
-    return findResource(search_paths, nsearch_paths, searchPoints);
+    String exe_dir = Path::Get(Path::DIR_EXE);
+    return findResource(search_paths, nsearch_paths, searchPoints, true, exe_dir);
 }
 
-// FIXME we really need a better way to figure out where our data is
 std::string getBerkeliumBinaryDir(const std::vector<String>&searchPoints) {
     using namespace boost::filesystem;
 
@@ -151,7 +149,7 @@ std::string getBerkeliumBinaryDir(const std::vector<String>&searchPoints) {
     // The current two reflect what we'd expect for installed
     // and what's in the source tree.
     path search_paths[] = {
-#if SIRIKATA_PLATFORM == PLATFORM_MAC
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
         // On mac we must be in a .app/Contents
         // It needs to be there so that running the .app from the Finder works
         // and therefore the resources for berkelium are setup to be found from
@@ -165,7 +163,8 @@ std::string getBerkeliumBinaryDir(const std::vector<String>&searchPoints) {
     };
     uint32 nsearch_paths = sizeof(search_paths)/sizeof(*search_paths);
 
-    return findResource(search_paths, nsearch_paths,searchPoints);
+    String exe_dir = Path::Get(Path::DIR_EXE);
+    return findResource(search_paths, nsearch_paths, searchPoints, true, exe_dir);
 }
 
 std::string getChromeResourcesDir(const std::vector<String>&searchPoints) {
@@ -255,8 +254,9 @@ public:
 
 
 
-OgreRenderer::OgreRenderer(Context* ctx)
- : TimeSteppedSimulation(ctx, Duration::seconds(1.f/60.f), "Ogre Graphics", true),
+OgreRenderer::OgreRenderer(Context* ctx,Network::IOStrandPtr sStrand)
+ : TimeSteppedSimulation(ctx, Duration::seconds(1.f/60.f), "Ogre Graphics", sStrand,true),
+   simStrand(sStrand),
    mContext(ctx),
    mQuitRequested(false),
    mQuitRequestHandled(false),
@@ -266,7 +266,9 @@ OgreRenderer::OgreRenderer(Context* ctx)
    mOnTickCallback(NULL),
    mModelParser( ModelsSystemFactory::getSingleton ().getConstructor ( "any" ) ( "" ) ),
    mDownloadPlanner(NULL),
-   mNextFrameScreenshotFile("")
+   mNextFrameScreenshotFile(""),
+   initialized(false),
+   stopped(false)
 {
     try {
         // These have to be consistent with any other simulations -- e.g. the
@@ -318,7 +320,7 @@ bool OgreRenderer::initialize(const String& options, bool with_berkelium) {
                            ogreSceneManager=new OptionValue("scenemanager","OctreeSceneManager",OptionValueType<String>(),"Which scene manager to use to arrange objects"),
                            mWindowWidth=new OptionValue("windowwidth","1024",OptionValueType<uint32>(),"Window width"),
                            mFullScreen=new OptionValue("fullscreen","false",OptionValueType<bool>(),"Fullscreen"),
-#if SIRIKATA_PLATFORM == PLATFORM_MAC
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
 #define SIRIKATA_OGRE_DEFAULT_WINDOW_HEIGHT "600"
 #else
 #define SIRIKATA_OGRE_DEFAULT_WINDOW_HEIGHT "768"
@@ -360,9 +362,16 @@ bool OgreRenderer::initialize(const String& options, bool with_berkelium) {
 
     // Initialize this first so we can get it to not spit out to stderr
     Ogre::LogManager * lm = OGRE_NEW Ogre::LogManager();
+    // NOTE: we specifically keep the log file as specified instead of
+    // relocating it so logs show up in the expected location and
+    // different clients don't overwrite each other's logs if they are
+    // run from different locations
     lm->createLog(ogreLogFile->as<String>(), true, false, false);
 
-    static bool success=((sRoot=OGRE_NEW Ogre::Root(pluginFile->as<String>(),configFile->as<String>(),ogreLogFile->as<String>()))!=NULL
+    // NOTE: However, unlike above, we share the config file. This is
+    // nice since you only have to configure once.
+    std::string ogreConfigFile = Path::Get(Path::DIR_USER_HIDDEN, configFile->as<String>());
+    static bool success=((sRoot=OGRE_NEW Ogre::Root(pluginFile->as<String>(),ogreConfigFile,ogreLogFile->as<String>()))!=NULL
                          &&loadBuiltinPlugins()
                          &&((purgeConfig->as<bool>()==false&&getRoot()->restoreConfig())
                             || (userAccepted=getRoot()->showConfigDialog())));
@@ -486,6 +495,7 @@ bool OgreRenderer::initialize(const String& options, bool with_berkelium) {
     }
 
     if (!getRoot()->isInitialised()) {
+        initialized = true;
         return false;
     }
     if (mRenderWindow != NULL) {
@@ -514,6 +524,7 @@ bool OgreRenderer::initialize(const String& options, bool with_berkelium) {
 
     loadSystemLights();
 
+    initialized = true;
     return true;
 }
 
@@ -522,7 +533,7 @@ bool ogreLoadPlugin(const String& _filename, const String& root = "") {
     using namespace boost::filesystem;
 
     String filename = _filename;
-#if SIRIKATA_PLATFORM == PLATFORM_MAC
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
     filename += ".dylib";
 #endif
 
@@ -553,7 +564,9 @@ bool ogreLoadPlugin(const String& _filename, const String& root = "") {
     path not_found;
     path plugin_path = path(findResource(search_paths, nsearch_paths, std::vector<String>(), false, root, not_found));
     if (plugin_path == not_found)
+    {
         return false;
+    }
 
     String plugin_str = plugin_path.string();
 
@@ -831,7 +844,15 @@ void OgreRenderer::preFrame(Task::LocalTime currentTime, Duration frameTime) {
 void OgreRenderer::postFrame(Task::LocalTime current, Duration frameTime) {
 }
 
-void OgreRenderer::poll() {
+void OgreRenderer::poll()
+{
+    if (!initialized)
+        return;
+
+    if (stopped)
+        return;
+
+
     Task::LocalTime curFrameTime(Task::LocalTime::now());
 
     Duration frameTime=curFrameTime-mLastFrameTime;
@@ -850,9 +871,25 @@ void OgreRenderer::poll() {
     }
 }
 
-void OgreRenderer::stop() {
+void OgreRenderer::stop()
+{
+    simStrand->post(
+        std::tr1::bind(&OgreRenderer::iStop, this,
+            livenessToken()));
+}
+
+void OgreRenderer::iStop(Liveness::Token rendererAlive)
+{
+    if (!rendererAlive) return;
+    Liveness::Lock locked(rendererAlive);
+    if (!locked)
+        return;
+
+    while (! initialized){}
+
     delete mParsingWork;
     TimeSteppedSimulation::stop();
+    stopped = true;
 }
 
 // Invokable Interface
@@ -947,19 +984,38 @@ void OgreRenderer::addObject(Entity* ent, const Transfer::URI& mesh) {
     mDownloadPlanner->addNewObject(ent, mesh);
 }
 
+
 void OgreRenderer::removeObject(Entity* ent) {
     mDownloadPlanner->removeObject(ent);
 }
 
-void OgreRenderer::parseMesh(const Transfer::RemoteFileMetadata& metadata, const Transfer::Fingerprint& fp, Transfer::DenseDataPtr data, ParseMeshCallback cb) {
+void OgreRenderer::parseMesh(
+    const Transfer::RemoteFileMetadata& metadata, const Transfer::Fingerprint& fp,
+    Transfer::DenseDataPtr data, ParseMeshCallback cb)
+{
     mParsingIOService->post(
-        std::tr1::bind(&OgreRenderer::parseMeshWork, this, metadata, fp, data, cb)
+        std::tr1::bind(&OgreRenderer::parseMeshWork, this,
+            livenessToken(),metadata, fp, data, cb)
     );
 }
 
-void OgreRenderer::parseMeshWork(const Transfer::RemoteFileMetadata& metadata, const Transfer::Fingerprint& fp, Transfer::DenseDataPtr data, ParseMeshCallback cb) {
+void OgreRenderer::parseMeshWork(
+    Liveness::Token rendererAlive,
+    const Transfer::RemoteFileMetadata& metadata,
+    const Transfer::Fingerprint& fp, Transfer::DenseDataPtr data,
+    ParseMeshCallback cb)
+{
+    if (!rendererAlive) return;
+    Liveness::Lock locked(rendererAlive);
+    if (!locked)
+        return;
+
+
+    if (stopped)
+        return;
+
     Mesh::VisualPtr parsed = parseMeshWorkSync(metadata, fp, data);
-    mContext->mainStrand->post(std::tr1::bind(cb, parsed));
+    simStrand->post(std::tr1::bind(cb,parsed));
 }
 
 Mesh::VisualPtr OgreRenderer::parseMeshWorkSync(const Transfer::RemoteFileMetadata& metadata, const Transfer::Fingerprint& fp, Transfer::DenseDataPtr data) {

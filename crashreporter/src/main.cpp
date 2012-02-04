@@ -43,12 +43,12 @@
 
 #include <string>
 
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 #include<shellapi.h>
 #endif
 
 #ifdef HAVE_BREAKPAD
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 #include <client/windows/crash_generation/crash_generation_server.h>
 #include <client/windows/crash_generation/client_info.h>
 #endif
@@ -61,7 +61,6 @@ size_t writehandler(void*ptr, size_t size, size_t nmemb, std::string* userdata) 
 
 void reportCrash(const std::string& report_url, const std::string&dumpfilename,  const std::string& fulldumpfile, const std::string& sirikata_version, const std::string& sirikata_git_hash) {
     CURL* curl;
-    CURLcode res;
 
     curl_httppost* formpost = NULL;
     curl_httppost* lastptr = NULL;
@@ -98,15 +97,15 @@ void reportCrash(const std::string& report_url, const std::string&dumpfilename, 
         curl_easy_setopt(curl, CURLOPT_HTTPPOST, formpost);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resultStr);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writehandler);
-        res = curl_easy_perform(curl);
+        curl_easy_perform(curl);
 
         curl_easy_cleanup(curl);
         curl_formfree(formpost);
 
         if (!resultStr.empty()) {
-#if SIRIKATA_PLATFORM == PLATFORM_LINUX
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_LINUX
             execlp("xdg-open", "xdg-open", resultStr.c_str(), (char*)NULL);
-#elif SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 	    ShellExecute(NULL, "open", resultStr.c_str(), NULL, NULL, SW_SHOWNORMAL);
 #endif
         }
@@ -117,7 +116,7 @@ void reportCrash(const std::string& report_url, const std::string&dumpfilename, 
 #ifdef HAVE_BREAKPAD
 
 // Currently only enabled for windows
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 
 
 std::string wchar_to_string(const wchar_t* orig) {
@@ -213,7 +212,7 @@ void OnClientDumpRequest(void* context,
     n_work--;
 }
 
-#endif // SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#endif // SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 #endif // HAVE_BREAKPAD
 
 int main(int argc, char** argv) {
@@ -233,7 +232,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 #ifdef HAVE_BREAKPAD // All crash generation server code is only relevant with breakpad
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS // windows only OOP right now
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS // windows only OOP right now
     else {
         // Otherwise, we're in out of process minidump generation + crashreport
         // service mode: we setup to listen for crashes, help the other process

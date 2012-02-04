@@ -6,11 +6,12 @@
 #include <sirikata/core/util/Liveness.hpp>
 #include <sirikata/mesh/Visual.hpp>
 #include "../JSVisibleManager.hpp"
+#include "../JSCtx.hpp"
 
 namespace Sirikata {
 namespace JS {
 
-class JSProxyData;
+class JSVisibleData;
 class JSContextStruct;
 
 //note: only position and isConnected will actually set the flag of the watchable
@@ -65,16 +66,31 @@ public:
 
 protected:
     v8::Handle<v8::Value> wrapSporef(SpaceObjectReference sporef);
-    std::tr1::shared_ptr<JSProxyData> jpp;
+
+
+    EmersonScript* mParentScript;
+    JSAggregateVisibleDataPtr jpp;
     // We don't store this in jpp because we would just have to keep track of
     // separate flags for whether we loaded it so we could do some refcounting.
     Mesh::VisualPtr mVisual;
+    JSCtx* mCtx;
 
 private:
 
+    void eLoadMesh(
+        JSContextStruct* ctx,v8::Persistent<v8::Function>cb);
+
+    void iFinishLoadMesh(
+        Liveness::Token alive, Liveness::Token ctx_alive,
+        JSContextStruct* ctx, v8::Persistent<v8::Function> cb,
+        Mesh::VisualPtr data);
+
+
     //private constructor.  Can only be made through serializer,
     //JSVisibleStruct, or JSPresenceStruct.
-    JSPositionListener(JSProxyPtr _jpp);
+    JSPositionListener(EmersonScript* parent, JSAggregateVisibleDataPtr _jpp, JSCtx* ctx);
+    // Disabled default constructor
+    JSPositionListener();
 
     // Invoked after loading is complete, invokes callback if all necessary
     // components are still alive.

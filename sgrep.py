@@ -23,13 +23,14 @@ ABSOLUTE_EXCLUDES = [
     'build/Frameworks',
     'doc',
     'docs',
-    'libproxyobject/plugins/ogre/data/ace',
-    'libproxyobject/plugins/ogre/data/labjs',
-    'libproxyobject/plugins/ogre/data/jquery_themes',
-    'libproxyobject/plugins/ogre/data/jquery_plugins',
-    'libproxyobject/plugins/ogre/data/jquery',
+    'liboh/plugins/ogre/data/ace',
+    'liboh/plugins/ogre/data/labjs',
+    'liboh/plugins/ogre/data/jquery_themes',
+    'liboh/plugins/ogre/data/jquery_plugins',
+    'liboh/plugins/ogre/data/jquery',
     'liboh/plugins/js/emerson/alt_regress',
-    'liboh/plugins/js/emerson/regression'
+    'liboh/plugins/js/emerson/regression',
+    'libproxyobject/plugins/ogre/data/ace/build/src'
     ]
 
 if __name__ == "__main__":

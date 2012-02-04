@@ -10,6 +10,7 @@
 #include <sirikata/core/util/Nullable.hpp>
 #include "../JSObjects/JSObjectsUtils.hpp"
 #include "JSCapabilitiesConsts.hpp"
+#include "../JSCtx.hpp"
 
 namespace Sirikata {
 namespace JS {
@@ -17,6 +18,7 @@ namespace JS {
 
 struct PresStructRestoreParams
 {
+/*
     PresStructRestoreParams(const SpaceObjectReference& _sporef,
         const Nullable<Time>& _positionTime,
         const Vector3f& _position,
@@ -57,6 +59,45 @@ struct PresStructRestoreParams
            queryMaxResults(max_results)
     {
     }
+*/
+    PresStructRestoreParams(const SpaceObjectReference& _sporef,
+        const Nullable<Time>& _positionTime,
+        const Vector3f& _position,
+        const Vector3f& _velocity,
+        const Nullable<Time>& _orientTime,
+        const Quaternion& _orient,
+        const Quaternion& _orientVelocity,
+        const String& _mesh,
+        const String& _physics,
+        const double& _scale,
+        const bool& _isCleared,
+        const Nullable<uint32>& _contID,
+        const bool& _isConnected,
+        const Nullable<v8::Handle<v8::Function> >& _connCallback,
+        const bool& _isSuspended,
+        const Nullable<Vector3f>& _suspendedVelocity,
+        const Nullable<Quaternion>& _suspendedOrientationVelocity,
+        const String& _query)
+     :     sporef(_sporef),
+           positionTime(_positionTime),
+           position(_position),
+           velocity(_velocity),
+           orientTime(_orientTime),
+           orient(_orient),
+           orientVelocity(_orientVelocity),
+           mesh(_mesh),
+           physics(_physics),
+           scale(_scale),
+           isCleared(_isCleared),
+           contID(_contID),
+           isConnected(_isConnected),
+           connCallback(_connCallback),
+           isSuspended(_isSuspended),
+           suspendedVelocity(_suspendedVelocity),
+           suspendedOrientationVelocity(_suspendedOrientationVelocity),
+           query(_query)
+    {
+    }
 
     SpaceObjectReference sporef;
     Nullable<Time> positionTime;
@@ -75,8 +116,7 @@ struct PresStructRestoreParams
     bool isSuspended;
     Nullable<Vector3f> suspendedVelocity;
     Nullable<Quaternion> suspendedOrientationVelocity;
-    SolidAngle query;
-    uint32 queryMaxResults;
+    String query;
 };
 
 
@@ -89,14 +129,14 @@ struct JSPresenceStruct : public JSPositionListener,
                           public JSSuspendable
 {
     //isConnected is false using this: have no sporef.
-    JSPresenceStruct(EmersonScript* parent,v8::Handle<v8::Function> onConnected,JSContextStruct* ctx, HostedObject::PresenceToken presenceToken);
+    JSPresenceStruct(EmersonScript* parent,v8::Handle<v8::Function> onConnected,JSContextStruct* ctx, HostedObject::PresenceToken presenceToken,JSCtx*);
 
     //Already have a sporef (ie, turn an entity in the world that wasn't built
     //for scripting into one that is)
-    JSPresenceStruct(EmersonScript* parent, const SpaceObjectReference& _sporef, JSContextStruct* ctx,HostedObject::PresenceToken presenceToken);
+    JSPresenceStruct(EmersonScript* parent, const SpaceObjectReference& _sporef, JSContextStruct* ctx,HostedObject::PresenceToken presenceToken,JSCtx*);
 
     //restoration constructor
-    JSPresenceStruct(EmersonScript* parent,PresStructRestoreParams& psrp,Vector3f center, HostedObject::PresenceToken presToken,JSContextStruct* jscont, const TimedMotionVector3f& tmv, const TimedMotionQuaternion& tmq);
+    JSPresenceStruct(EmersonScript* parent,PresStructRestoreParams& psrp,Vector3f center, HostedObject::PresenceToken presToken,JSContextStruct* jscont, const TimedMotionVector3f& tmv, const TimedMotionQuaternion& tmq,JSCtx*);
 
 
     virtual void fixupSuspendable()
@@ -143,13 +183,9 @@ struct JSPresenceStruct : public JSPositionListener,
 
     HostedObject::PresenceToken getPresenceToken();
 
-    SolidAngle getQueryAngle();
-    v8::Handle<v8::Value>  struct_getQueryAngle();
-    v8::Handle<v8::Value>  setQueryAngleFunction(SolidAngle new_qa);
-    uint32 getQueryCount();
-    v8::Handle<v8::Value>  struct_getQueryCount();
-    v8::Handle<v8::Value>  setQueryCount(uint32 new_qc);
-
+    const String& getQuery();
+    v8::Handle<v8::Value> struct_getQuery();
+    v8::Handle<v8::Value> setQueryFunction(const String& new_query);
 
 
     v8::Handle<v8::Value>  setOrientationVelFunction(Quaternion newOrientationVel);
@@ -161,7 +197,6 @@ struct JSPresenceStruct : public JSPositionListener,
 
 
 
-    v8::Handle<v8::Value>  getPhysicsFunction();
     v8::Handle<v8::Value>  setPhysicsFunction(const String& loc);
 
     //returns this presence as a visible object.
@@ -190,9 +225,6 @@ private:
     bool hasConnectedCallback;
     HostedObject::PresenceToken mPresenceToken;
 
-    TimedMotionVector3f mLocation;
-    TimedMotionQuaternion mOrientation;
-
     //These two pieces of state hold the values for a presence's
     //velocity and orientation velocity when suspend was called.
     //on resume, use these velocities to resume from.
@@ -201,8 +233,7 @@ private:
 
 
     JSContextStruct* mContext;
-    SolidAngle mQueryAngle;
-    uint32 mQueryMaxCount;
+    String mQuery;
 
     ContextVector associatedContexts;
     void clearPreviousConnectedCB();

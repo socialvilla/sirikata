@@ -57,6 +57,9 @@
 #include "EmersonHttpManager.hpp"
 #include <sirikata/core/util/Liveness.hpp>
 #include <stack>
+#include <sirikata/core/network/IOStrandImpl.hpp>
+#include "JSCtx.hpp"
+#include <sirikata/core/util/SerializationCheck.hpp>
 
 
 namespace Sirikata {
@@ -70,11 +73,15 @@ void printException(v8::TryCatch& try_catch);
 class SIRIKATA_SCRIPTING_JS_EXPORT JSObjectScript : public ObjectScript, public virtual Liveness
 {
 public:
-    JSObjectScript(JSObjectScriptManager* jMan, OH::Storage* storage, OH::PersistedObjectSet* persisted_set, const UUID& internal_id);
+    JSObjectScript(JSObjectScriptManager* jMan, OH::Storage* storage,
+        OH::PersistedObjectSet* persisted_set, const UUID& internal_id,
+        JSCtx* ctx);
+
+
     virtual ~JSObjectScript();
 
-    v8::Handle<v8::Value> debug_fileWrite(const String& strToWrite,const String& filename);
-    v8::Handle<v8::Value> debug_fileRead(const String& filename);
+    v8::Handle<v8::Value> debug_fileWrite(String& strToWrite,String& filename);
+    v8::Handle<v8::Value> debug_fileRead(String& filename);
 
 
     v8::Handle<v8::Value> executeInSandbox(JSContextStruct* jscont, v8::Handle<v8::Function> funcToCall,int argc, v8::Handle<v8::Value>* argv);
@@ -130,6 +137,11 @@ public:
 
     v8::Handle<v8::Value> setRestoreScript(JSContextStruct* jscont, const String& script, v8::Handle<v8::Function> cb);
 
+    //creates a new EvalContext with newDir as scripting directory.  Puts that
+    //context on mEvalContextStack.
+    v8::Handle<v8::Value> pushEvalContextScopeDirectory(const String& newDir);
+    v8::Handle<v8::Value> popEvalContextScopeDirectory();
+    
     /**
        Returns true if context eval stack is not empty and if the top context on
        the stack allows operation associated with whatCap on jspres.  Returns
@@ -164,16 +176,18 @@ public:
 
 
 
+
+
+    //lkjs; note: will need to grab most recent context from stack.
+    v8::Local<v8::Function> functionValue(const String& em_script_str);
+
+
     // A generic interface for invoking callback methods, used by other classes
     // that have JSObjectScript* (e.g. Invokable). Probably needs a version for
     // contexts if the function was bound within a context
     v8::Handle<v8::Value> invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Object>* target, v8::Handle<v8::Function>& cb, int argc, v8::Handle<v8::Value> argv[]);
     v8::Handle<v8::Value> invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Function>& cb, int argc, v8::Handle<v8::Value> argv[]);
     v8::Handle<v8::Value> invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Function>& cb);
-
-
-    //lkjs; note: will need to grab most recent context from stack.
-    v8::Local<v8::Function> functionValue(const String& em_script_str);
 
 
 
@@ -201,8 +215,12 @@ public:
     v8::Handle<v8::Value> evalInGlobal(const String& contents, v8::ScriptOrigin* em_script_name,JSContextStruct* jscs);
 
 
-
 protected:
+
+
+
+
+    JSCtx* mCtx;
 
     // Object host internal identifier for the object associated with
     // this script. We copy this information here because this base
@@ -310,6 +328,7 @@ protected:
     v8::Handle<v8::Value> absoluteImport(const boost::filesystem::path& full_filename, const boost::filesystem::path& full_base_dir,bool isJS);
 
 
+
     JSContextStruct* mContext;
 
 
@@ -323,10 +342,17 @@ protected:
     OH::Storage* mStorage;
     OH::PersistedObjectSet* mPersistedObjectSet;
 
-    void storageCommitCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success, OH::Storage::ReadSet* rs);
-    void storageCountCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success, int32 count);
+    void storageCommitCallback(
+        JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+        bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+        Liveness::Token ctxAlive);
 
-    void setRestoreScriptCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success);
+    void storageCountCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+        bool success, int32 count,Liveness::Token objAlive,Liveness::Token ctxAlive);
+
+    void setRestoreScriptCallback(
+        JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success,
+        Liveness::Token,Liveness::Token ctxAlive);
 
     /**
        If we execute this number of cycles in one pass of event loop, throw a
@@ -339,9 +365,10 @@ protected:
      */
     bool stopCalled;
 
-
+    void iStop(bool letDie);
 
   private:
+
     //should already be inside of a frame;
     v8::Handle<v8::Value> compileFunctionInContext( v8::Handle<v8::Function>&cb);
 
@@ -350,7 +377,7 @@ protected:
     // code but which should report errors to the user.
     void printExceptionToScript(const String& exc);
 
-    v8::Handle<v8::Value> protectedEval(const String& em_script_str, v8::ScriptOrigin* em_script_name, const EvalContext& new_ctx, bool return_exc = false, bool isJS=false);
+    v8::Handle<v8::Value> protectedEval(const String& em_script_str, v8::ScriptOrigin* em_script_name, const EvalContext& new_ctx, bool return_exc = false, const String& cache_path = "", bool isJS=false);
 
 
     // is_emerson controls whether this is compiled as emerson or
@@ -362,14 +389,73 @@ protected:
     //         necessary if there is no JS caller higher on the
     //         stack. Otherwise, V8 gets stuck with an uncaught
     //         exception and fails on future V8 calls.
-    v8::Handle<v8::Value> internalEval( const String& em_script_str, v8::ScriptOrigin* em_script_name, bool is_emerson, bool return_exc = false);
+    // \param cache_path if non-empty, cache compiled results to the given file
+    v8::Handle<v8::Value> internalEval( const String& em_script_str, v8::ScriptOrigin* em_script_name, bool is_emerson, bool return_exc = false, const String& cache_path = "");
 
 
     //Takes the context from the top value of context stack and returns it.  If
     //context stack is empty, prints error, and returns context associated with mContext.
     v8::Handle<v8::Context> getCurrentV8Context();
 
+
+
+
+    //all of these functions are used to post between strands.
+    void eStorageBeginTransaction(JSContextStruct* jscont,
+        Liveness::Token objAlive,Liveness::Token ctxAlive);
+
+    void eStorageCommit(
+        JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+        Liveness::Token objAlive,Liveness::Token ctxAlive);
+
+    void iStorageCommitCallback(
+        JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+        bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+        Liveness::Token ctxAlive);
+    void iStorageCountCallback(
+        JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+        bool success, int32 count,Liveness::Token objAlive,
+        Liveness::Token ctxAlive);
+    void eStorageErase(
+        const OH::Storage::Key& key, v8::Persistent<v8::Function> cb,
+        JSContextStruct* jscont,Liveness::Token objAlive,
+        Liveness::Token ctxAlive);
+    void eStorageWrite(
+        const OH::Storage::Key& key, const String& toWrite,
+        v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+        Liveness::Token objAlive,Liveness::Token ctxAlive);
+    void eStorageRead(
+        const OH::Storage::Key& key, v8::Persistent<v8::Function> cb,
+        JSContextStruct* jscont,Liveness::Token objAlive,
+        Liveness::Token ctxAlive);
+
+    void eStorageRangeRead(
+        const OH::Storage::Key& start, const OH::Storage::Key& finish,
+        v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+        Liveness::Token objAlive,Liveness::Token ctxAlive);
+
+    void eStorageRangeErase(
+        const OH::Storage::Key& start, const OH::Storage::Key& finish,
+        v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+        Liveness::Token objAlive,Liveness::Token ctxAlive);
+
+    void eStorageCount(
+        const OH::Storage::Key& start, const OH::Storage::Key& finish,
+        v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+        Liveness::Token objAlive,Liveness::Token ctxAlive);
+
+    void eSetRestoreScript(
+        JSContextStruct* jscont, const String& script,
+        v8::Persistent<v8::Function> cb, Liveness::Token objAlive,
+        Liveness::Token ctxAlive);
+
+    void iDelContext(JSContextStruct* toDel,Liveness::Token ctxLT);
+
 };
+
+#define JSSCRIPT_SERIAL_CHECK()\
+    Sirikata::SerializationCheck::Scoped sc (mCtx->serializationCheck());
+
 
 } // namespace JS
 } // namespace Sirikata

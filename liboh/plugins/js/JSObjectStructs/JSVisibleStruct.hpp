@@ -5,6 +5,8 @@
 #include <v8.h>
 #include <vector>
 #include "JSPositionListener.hpp"
+#include "../JSCtx.hpp"
+#include "../JSVisibleData.hpp"
 
 namespace Sirikata {
 namespace JS {
@@ -12,7 +14,6 @@ namespace JS {
 //need to forward-declare this so that can reference this inside
 class EmersonScript;
 class JSVisibleManager;
-class JSProxyData;
 
 
 struct JSVisibleStruct : public JSPositionListener
@@ -35,9 +36,9 @@ public:
      */
     static void visibleWeakReferenceCleanup(v8::Persistent<v8::Value> containsVisStruct, void* otherArg);
 
-    
+
 private:
-    JSVisibleStruct( std::tr1::shared_ptr<JSProxyData>  jspd);
+    JSVisibleStruct(EmersonScript* parent, JSAggregateVisibleDataPtr jspd, JSCtx* ctx);
     friend class JSVisibleManager;
 
 };

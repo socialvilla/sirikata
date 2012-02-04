@@ -92,6 +92,17 @@ void LibproxProximityBase::ProxStreamInfo<EndpointType, StreamType>::requestProx
     // the request is deferred, should eventually result in a stream.
     prox_stream->iostream_requested = true;
 
+    // We need to check for a valid session here. This can be necessary because
+    // we may have gotten a base session, registered a query, gotten results,
+    // started to try returning them and had to wait for the base stream to the
+    // object, and then had it disconnect before it ever got there. Then we'd be
+    // stuck in an infinite loop, checking for the base stream and failing to
+    // find it, then posting a retry.  validSession should only check for a
+    // still-active connection, not the stream, so it should only kill this
+    // process in this unusual case of a very short lived connection to the
+    // space.
+    if (!parent->validSession(ep)) return;
+
     StreamTypePtr base_stream = parent->getBaseStream(ep);
     if (!base_stream) {
         ctx->mainStrand->post(
@@ -380,45 +391,37 @@ void LibproxProximityBase::aggregateCreated(const UUID& objid) {
 }
 
 void LibproxProximityBase::aggregateChildAdded(const UUID& objid, const UUID& child, const BoundingSphere3f& bnds) {
-    if (!mLocService->contains(objid) || mLocService->bounds(objid) != bnds) {
-        // Loc cares only about this chance to update state of aggregate
-        mContext->mainStrand->post(
-            std::tr1::bind(
-                &LibproxProximityBase::updateAggregateLoc, this,
-                objid, bnds
-            )
-        );
-    }
+    mContext->mainStrand->post(
+        std::tr1::bind(
+            &LibproxProximityBase::updateAggregateLoc, this,
+            objid, bnds
+        )
+    );
 
     mAggregateManager->addChild(objid, child);
 }
 
 void LibproxProximityBase::aggregateChildRemoved(const UUID& objid, const UUID& child, const BoundingSphere3f& bnds) {
-    if (!mLocService->contains(objid) || mLocService->bounds(objid) != bnds) {
-        // Loc cares only about this chance to update state of aggregate
-        mContext->mainStrand->post(
-            std::tr1::bind(
-                &LibproxProximityBase::updateAggregateLoc, this,
-                objid, bnds
-            )
-        );
-    }
+    // Loc cares only about this chance to update state of aggregate
+    mContext->mainStrand->post(
+        std::tr1::bind(
+            &LibproxProximityBase::updateAggregateLoc, this,
+            objid, bnds
+        )
+    );
 
     mAggregateManager->removeChild(objid, child);
 }
 
 void LibproxProximityBase::aggregateBoundsUpdated(const UUID& objid, const BoundingSphere3f& bnds) {
-    if (!mLocService->contains(objid) || mLocService->bounds(objid) != bnds) {
-        mContext->mainStrand->post(
-            std::tr1::bind(
-                &LibproxProximityBase::updateAggregateLoc, this,
-                objid, bnds
-            )
-        );
-    }
+    mContext->mainStrand->post(
+        std::tr1::bind(
+            &LibproxProximityBase::updateAggregateLoc, this,
+            objid, bnds
+        )
+    );
 
-    if (mLocService->contains(objid) && mLocService->bounds(objid) != bnds)
-        mAggregateManager->generateAggregateMesh(objid, Duration::seconds(300.0+rand()%300));
+    mAggregateManager->generateAggregateMesh(objid, Duration::seconds(300.0+rand()%300));
 }
 
 void LibproxProximityBase::aggregateDestroyed(const UUID& objid) {
@@ -434,8 +437,14 @@ void LibproxProximityBase::aggregateObserved(const UUID& objid, uint32 nobserver
     mAggregateManager->aggregateObserved(objid, nobservers);
 }
 
+// MAIN strand
 void LibproxProximityBase::updateAggregateLoc(const UUID& objid, const BoundingSphere3f& bnds) {
-    if (mLocService->contains(objid)) {
+    // TODO(ewencp) This comparison looks wrong, but might be due to
+    // the way we're setting location and bounds and both are using
+    // bnds.center(). Shouldn't we be using the center for position
+    // and make bounds origin centered? But apparently this was
+    // working, so leaving it for now...
+    if (mLocService->contains(objid) && mLocService->bounds(objid) != bnds) {
         mLocService->updateLocalAggregateLocation(
             objid,
             TimedMotionVector3f(mContext->simTime(), MotionVector3f(bnds.center(), Vector3f(0,0,0)))

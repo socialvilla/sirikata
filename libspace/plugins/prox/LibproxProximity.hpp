@@ -34,7 +34,7 @@
 #define _SIRIKATA_LIBPROX_PROXIMITY_HPP_
 
 #include "LibproxProximityBase.hpp"
-#include <sirikata/space/ProxSimulationTraits.hpp>
+#include "ProxSimulationTraits.hpp"
 #include <prox/geom/QueryHandler.hpp>
 #include <prox/base/LocationUpdateListener.hpp>
 #include <prox/base/AggregateListener.hpp>
@@ -254,7 +254,7 @@ private:
     // Results from queries to other servers, so we know what we need to remove
     // on forceful disconnection
     ServerQueryResultSet mServerQueryResults;
-    Poller mServerHandlerPoller;
+    PollerService mServerHandlerPoller;
 
     // These track all objects being reported to this server and
     // answer queries for objects connected to this server.
@@ -262,11 +262,11 @@ private:
     InvertedObjectQueryMap mInvertedObjectQueries;
     ProxQueryHandler* mObjectQueryHandler[NUM_OBJECT_CLASSES];
     bool mObjectDistance; // Using distance queries
-    Poller mObjectHandlerPoller;
+    PollerService mObjectHandlerPoller;
 
     // Pollers that trigger rebuilding of query data structures
-    Poller mStaticRebuilderPoller;
-    Poller mDynamicRebuilderPoller;
+    PollerService mStaticRebuilderPoller;
+    PollerService mDynamicRebuilderPoller;
 
     // Track SeqNo info for each querier
     typedef std::tr1::unordered_map<ServerID, SeqNoPtr> ServerSeqNoInfoMap;

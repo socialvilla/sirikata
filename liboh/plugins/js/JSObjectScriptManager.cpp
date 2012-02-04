@@ -62,6 +62,9 @@
 
 #include <sirikata/core/transfer/AggregatedTransferPool.hpp>
 
+#include <sirikata/core/util/Paths.hpp>
+
+
 namespace Sirikata {
 namespace JS {
 
@@ -75,6 +78,7 @@ ObjectScriptManager* JSObjectScriptManager::createObjectScriptManager(ObjectHost
 
 JSObjectScriptManager::JSObjectScriptManager(ObjectHostContext* ctx, const Sirikata::String& arguments)
  : mContext(ctx),
+   mIsolate(v8::Isolate::New()),
    mTransferPool(),
    mParsingIOService(NULL),
    mParsingWork(NULL),
@@ -106,14 +110,28 @@ JSObjectScriptManager::JSObjectScriptManager(ObjectHostContext* ctx, const Sirik
         }
     }
 
+
+    OptionValue* default_import_paths;
     OptionValue* import_paths;
     OptionValue* v8_flags_opt;
     OptionValue* emer_resource_max;
     InitializeClassOptions(
         "jsobjectscriptmanager",this,
         // Default value allows us to use std libs in the build tree, starting
-        // from build/cmake
-        import_paths = new OptionValue("import-paths","<bindir>/../../liboh/plugins/js/scripts,<bindir>/../../../liboh/plugins/js/scripts,<bindir>/../share/js/scripts",OptionValueType<std::list<String> >(),"Comma separated list of paths to import files from, searched in order for the requested import."),
+        // from build/cmake, bin/, or lib/sirikata/. These defaults
+        // are pretty much always sane -- only override if you
+        // absolutely know what you're doing
+        default_import_paths = new OptionValue("default-import-paths",
+            Path::Placeholders::DIR_SYSTEM_CONFIG + "/js/scripts" + "," +
+            Path::Placeholders::RESOURCE(JS_PLUGINS_DIR, JS_SCRIPTS_DIR) + "," +
+            Path::Placeholders::DIR_CURRENT,
+            OptionValueType<std::list<String> >(),"Comma separated list of paths to import files from, searched in order for the requested import."),
+        // These are additional import paths. Generally if you need to
+        // adjust import paths, you want to simply add to this. We
+        // split the default-import-paths and import-paths so it's
+        // easier to override the paths by only adding import-paths
+        // and not changing default-import-paths
+        import_paths = new OptionValue("import-paths","",OptionValueType<std::list<String> >(),"Comma separated list of paths to import files from, searched in order for the requested import."),
         v8_flags_opt = new OptionValue("v8-flags", "", OptionValueType<String>(), "Flags to pass on to v8, e.g. for profiling."),
         emer_resource_max = new OptionValue("emer-resource-max","100000000",OptionValueType<int>(),"int32: how many cycles to allow to run in one pass of event loop before throwing resource error in Emerson."),
         NULL
@@ -136,6 +154,7 @@ JSObjectScriptManager::JSObjectScriptManager(ObjectHostContext* ctx, const Sirik
 
 void JSObjectScriptManager::createUtilTemplate()
 {
+
     v8::HandleScope handle_scope;
     mUtilTemplate = v8::Persistent<v8::ObjectTemplate>::New(v8::ObjectTemplate::New());
 
@@ -177,6 +196,7 @@ void JSObjectScriptManager::createUtilTemplate()
 //these templates involve vec, quat, pattern, etc.
 void JSObjectScriptManager::createTemplates()
 {
+    v8::Isolate::Scope iscope(mIsolate);
     v8::HandleScope handle_scope;
     mVec3Template        = v8::Persistent<v8::FunctionTemplate>::New(CreateVec3Template());
     mQuaternionTemplate  = v8::Persistent<v8::FunctionTemplate>::New(CreateQuaternionTemplate());
@@ -265,7 +285,14 @@ void JSObjectScriptManager::createSystemTemplate()
     mSystemTemplate->Set(v8::String::New("setRestoreScript"),v8::FunctionTemplate::New(JSSystem::setRestoreScript));
     mSystemTemplate->Set(v8::String::New("__emersonCompileString"), v8::FunctionTemplate::New(JSSystem::emersonCompileString));
 
-
+    mSystemTemplate->Set(v8::String::New("__pushEvalContextScopeDirectory"),
+        v8::FunctionTemplate::New(JSSystem::pushEvalContextScopeDirectory));
+    mSystemTemplate->Set(v8::String::New("__popEvalContextScopeDirectory"),
+        v8::FunctionTemplate::New(JSSystem::popEvalContextScopeDirectory));
+    
+    mSystemTemplate->Set(v8::String::New("getUniqueToken"),
+        v8::FunctionTemplate::New(JSSystem::getUniqueToken));
+    
     mSystemTemplate->Set(v8::String::New("createVisible"),v8::FunctionTemplate::New(JSSystem::root_createVisible));
 
     //check what permissions fake root is loaded with
@@ -474,10 +501,8 @@ void JSObjectScriptManager::createPresenceTemplate()
 
 
   // Query angle
-  proto_t->Set(v8::String::New("setQueryAngle"),v8::FunctionTemplate::New(JSPresence::setQueryAngle));
-  proto_t->Set(v8::String::New("getQueryAngle"), v8::FunctionTemplate::New(JSPresence::getQueryAngle));
-  proto_t->Set(v8::String::New("setQueryCount"),v8::FunctionTemplate::New(JSPresence::setQueryCount));
-  proto_t->Set(v8::String::New("getQueryCount"), v8::FunctionTemplate::New(JSPresence::getQueryCount));
+  proto_t->Set(v8::String::New("setQuery"),v8::FunctionTemplate::New(JSPresence::setQuery));
+  proto_t->Set(v8::String::New("getQuery"), v8::FunctionTemplate::New(JSPresence::getQuery));
 
   //set up graphics
   proto_t->Set(v8::String::New("_runSimulation"),v8::FunctionTemplate::New(JSPresence::runSimulation));
@@ -538,15 +563,16 @@ void JSObjectScriptManager::loadMesh(const Transfer::URI& uri, MeshLoadCallback 
         uri,
         mTransferPool,
         1.0,
-        std::tr1::bind(&JSObjectScriptManager::meshDownloaded, this, _1, _2)
+        std::tr1::bind(&JSObjectScriptManager::meshDownloaded, this, _1, _2, _3)
     );
     mMeshDownloads[uri] = dl;
     dl->start();
 }
 
-void JSObjectScriptManager::meshDownloaded(Transfer::ChunkRequestPtr request, Transfer::DenseDataPtr data) {
+void JSObjectScriptManager::meshDownloaded(Transfer::ResourceDownloadTaskPtr taskptr, Transfer::TransferRequestPtr request, Transfer::DenseDataPtr data) {
+    Transfer::ChunkRequestPtr chunkreq = std::tr1::static_pointer_cast<Transfer::ChunkRequest>(request);
     mParsingIOService->post(
-        std::tr1::bind(&JSObjectScriptManager::parseMeshWork, this, request->getMetadata(), request->getMetadata().getFingerprint(), data)
+        std::tr1::bind(&JSObjectScriptManager::parseMeshWork, this, chunkreq->getMetadata(), chunkreq->getMetadata().getFingerprint(), data)
     );
 }
 
@@ -594,14 +620,24 @@ JSObjectScriptManager::~JSObjectScriptManager()
 
 JSObjectScript* JSObjectScriptManager::createHeadless(const String& args, const String& script,int32 maxres)
 {
-    JSObjectScript* new_script = new JSObjectScript(this, NULL, NULL, UUID::random());
+    JSLOG(error, "Cannot run emheadless without providing a context from which to get strand.");
+    assert(false);
+    JSObjectScript* new_script =
+        new JSObjectScript(this, NULL, NULL, UUID::random(),NULL);
+
     new_script->initialize(args, script, maxres);
     return new_script;
 }
 
 ObjectScript* JSObjectScriptManager::createObjectScript(HostedObjectPtr ho, const String& args, const String& script)
 {
-    EmersonScript* new_script = new EmersonScript(ho, args, script, this);
+    JSCtx* jsctx =
+        new JSCtx(mContext,Network::IOStrandPtr(mContext->ioService->createStrand()),mIsolate);
+
+    EmersonScript* new_script =new EmersonScript(
+        ho, args, script, this,jsctx);
+
+
     if (!new_script->valid()) {
         delete new_script;
         return NULL;

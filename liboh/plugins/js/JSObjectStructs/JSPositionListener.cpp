@@ -15,12 +15,10 @@
 namespace Sirikata {
 namespace JS {
 
-
-
-
-
-JSPositionListener::JSPositionListener(JSProxyPtr _jpp)
- : jpp(_jpp)
+JSPositionListener::JSPositionListener(EmersonScript* parent, JSAggregateVisibleDataPtr _jpp, JSCtx* ctx)
+ : mParentScript(parent),
+   jpp(_jpp),
+   mCtx(ctx)
 {
 }
 
@@ -58,25 +56,26 @@ v8::Handle<v8::Value> JSPositionListener::struct_getSporef()
 SpaceObjectReference JSPositionListener::getSporef()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getSporef,SpaceObjectReference::null());
-    return jpp->sporefToListenTo;
+    return jpp->id();
 }
 
 String JSPositionListener::getMesh()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getMesh,"");
-    return jpp->mMesh;
+    return jpp->mesh().toString();
 }
 
 v8::Handle<v8::Value> JSPositionListener::struct_getMesh()
 {
     CHECK_JPP_INIT_THROW_V8_ERROR(getMesh);
-    return v8::String::New(jpp->mMesh.c_str(),jpp->mMesh.size());
+    String mesh_str = getMesh();
+    return v8::String::New(mesh_str.c_str(), mesh_str.size());
 }
 
 bool JSPositionListener::getStillVisible()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(funcIn,false);
-    return jpp->emerScript->isVisible(jpp->sporefToListenTo);
+    return mParentScript->isVisible(jpp->id());
 }
 
 v8::Handle<v8::Value> JSPositionListener::struct_getStillVisible()
@@ -88,44 +87,44 @@ v8::Handle<v8::Value> JSPositionListener::struct_getStillVisible()
 String JSPositionListener::getPhysics()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getPhysics,"");
-    return jpp->mPhysics;
+    return jpp->physics();
 }
 
 v8::Handle<v8::Value> JSPositionListener::struct_getPhysics()
 {
     CHECK_JPP_INIT_THROW_V8_ERROR(getVisible);
-    return v8::String::New(jpp->mPhysics.c_str(),jpp->mPhysics.size());
+    return v8::String::New(jpp->physics().c_str(),jpp->physics().size());
 }
 
 
 Vector3f JSPositionListener::getPosition()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getPosition,Vector3f::zero());
-    return jpp->mLocation.position(jpp->emerScript->getHostedTime());
+    return jpp->location().position(mParentScript->getHostedTime());
 }
 Vector3f JSPositionListener::getVelocity()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getVelocity,Vector3f::zero());
-    return jpp->mLocation.velocity();
+    return jpp->location().velocity();
 }
 
 Quaternion JSPositionListener::getOrientationVelocity()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getOrientationVelocity,Quaternion::identity());
-    return jpp->mOrientation.velocity();
+    return jpp->orientation().velocity();
 }
 
 Quaternion JSPositionListener::getOrientation()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getOrientation,Quaternion::identity());
-    return jpp->mOrientation.position(jpp->emerScript->getHostedTime());
+    return jpp->orientation().position(mParentScript->getHostedTime());
 }
 
 
 BoundingSphere3f JSPositionListener::getBounds()
 {
     CHECK_JPP_INIT_THROW_LOG_CPP_ERROR(getBounds,BoundingSphere3f());
-    return jpp->mBounds;
+    return jpp->bounds();
 }
 
 v8::Handle<v8::Value> JSPositionListener::struct_getPosition()
@@ -137,7 +136,7 @@ v8::Handle<v8::Value> JSPositionListener::struct_getPosition()
 v8::Handle<v8::Value> JSPositionListener::struct_getTransTime()
 {
     CHECK_JPP_INIT_THROW_V8_ERROR(getTranstime);
-    uint64 transTime = jpp->mLocation.updateTime().raw();
+    uint64 transTime = jpp->location().updateTime().raw();
     String convertedString;
 
     try
@@ -157,7 +156,7 @@ v8::Handle<v8::Value> JSPositionListener::struct_getOrientTime()
 {
     CHECK_JPP_INIT_THROW_V8_ERROR(getOrientTime);
 
-    uint64 orientTime = jpp->mOrientation.updateTime().raw();
+    uint64 orientTime = jpp->orientation().updateTime().raw();
     String convertedString;
 
     try
@@ -208,31 +207,66 @@ v8::Handle<v8::Value> JSPositionListener::struct_getAnimationList()
     return handle_scope.Close(returner);
 }
 
-v8::Handle<v8::Value> JSPositionListener::loadMesh(JSContextStruct* ctx, v8::Handle<v8::Function> cb) {
+v8::Handle<v8::Value> JSPositionListener::loadMesh(
+    JSContextStruct* ctx, v8::Handle<v8::Function> cb)
+{
     CHECK_JPP_INIT_THROW_V8_ERROR(loadMesh);
 
-    JSObjectScriptManager::MeshLoadCallback wrapped_cb =
-        std::tr1::bind(&JSPositionListener::finishLoadMesh, this,
-            this->livenessToken(), ctx->livenessToken(), ctx, v8::Persistent<v8::Function>::New(cb), _1);
-    jpp->emerScript->manager()->loadMesh(Transfer::URI(getMesh()), wrapped_cb);
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSPositionListener::eLoadMesh,this,
+            ctx,v8::Persistent<v8::Function>::New(cb)));
+
     return v8::Undefined();
 }
 
-void JSPositionListener::finishLoadMesh(Liveness::Token alive, Liveness::Token ctx_alive, JSContextStruct* ctx, v8::Persistent<v8::Function> cb, Mesh::VisualPtr data) {
+void JSPositionListener::eLoadMesh(
+    JSContextStruct* ctx,v8::Persistent<v8::Function>cb)
+{
+    JSObjectScriptManager::MeshLoadCallback wrapped_cb =
+        std::tr1::bind(&JSPositionListener::finishLoadMesh, this,
+            this->livenessToken(), ctx->livenessToken(), ctx,cb, _1);
+
+    mParentScript->manager()->loadMesh(Transfer::URI(getMesh()), wrapped_cb);
+}
+
+
+
+
+void JSPositionListener::finishLoadMesh(
+    Liveness::Token alive, Liveness::Token ctx_alive, JSContextStruct* ctx,
+    v8::Persistent<v8::Function> cb, Mesh::VisualPtr data)
+{
     if (!alive || !ctx_alive) return;
 
-    if (jpp->emerScript->isStopped()) {
+    mCtx->objStrand->post(
+        std::tr1::bind(&JSPositionListener::iFinishLoadMesh,this,
+            alive,ctx_alive,ctx,cb,data));
+}
+
+
+
+void JSPositionListener::iFinishLoadMesh(
+    Liveness::Token alive, Liveness::Token ctx_alive, JSContextStruct* ctx,
+    v8::Persistent<v8::Function> cb, Mesh::VisualPtr data)
+{
+    if (!alive || !ctx_alive) return;
+
+    if (mParentScript->isStopped()) {
         JSLOG(warn, "Ignoring load mesh callback after shutdown request.");
         return;
     }
 
+    while (!mCtx->initialized())
+    {}
+
     mVisual = data;
 
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(ctx->mContext);
     TryCatch try_catch;
-    jpp->emerScript->invokeCallback(ctx, cb);
-    jpp->emerScript->postCallbackChecks();
+    mParentScript->invokeCallback(ctx, cb);
+    mParentScript->postCallbackChecks();
 }
 
 namespace {

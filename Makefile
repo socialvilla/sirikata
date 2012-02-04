@@ -8,6 +8,11 @@ release:
 	cmake . -DCMAKE_BUILD_TYPE=Release && \
 	$(MAKE) $(*)
 
+debian-release:
+	cd build/cmake && \
+	cmake . -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_BUILD_TYPE=Release && \
+	$(MAKE) $(*)
+
 debug:
 	cd build/cmake && \
 	cmake . -DCMAKE_BUILD_TYPE=Debug && \
@@ -24,14 +29,18 @@ tests:
 	cmake . && \
 	$(MAKE) tests $(*)
 
+install:
+	cd build/cmake && \
+	$(MAKE) install $(*)
+
 clean:
 	cd build/cmake && \
 	( test -e Makefile && $(MAKE) clean $(*) ) || true
 
 DEPVC8REV=HEAD
-DEPVC9REV=23
-DEPOSXREV=84
-DEPSOURCE=59
+DEPVC9REV=24
+DEPOSXREV=95
+DEPSOURCE=69
 DEPARCHINDEP=7
 #========== Dependencies ===========
 

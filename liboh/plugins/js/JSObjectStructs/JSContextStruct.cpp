@@ -24,10 +24,15 @@
 namespace Sirikata {
 namespace JS {
 
-JSContextStruct::JSContextStruct(JSObjectScript* parent, JSPresenceStruct* whichPresence, SpaceObjectReference home,Capabilities::CapNum capNum,v8::Handle<v8::ObjectTemplate> contGlobTempl, uint32 contextID,JSContextStruct* parentContext)
+JSContextStruct::JSContextStruct(
+    JSObjectScript* parent, JSPresenceStruct* whichPresence,
+    SpaceObjectReference home,Capabilities::CapNum capNum,
+    v8::Handle<v8::ObjectTemplate> contGlobTempl, uint32 contextID,
+    JSContextStruct* parentContext,JSCtx* jsctx)
  : JSSuspendable(),
    jsObjScript(parent),
    mContext(v8::Context::New(NULL, contGlobTempl)),
+   mCtx(jsctx),
    mParentContext(parentContext),
    mContextID(contextID),
    hasOnConnectedCallback(false),
@@ -56,7 +61,7 @@ v8::Handle<v8::Value> JSContextStruct::httpRequest(Sirikata::Network::Address ad
     return v8::Uint32::New(emerScript->getEmersonHttpPtr()->makeRequest(addr,method,request, cb, this));
 }
 
-
+//EmersonHttpManager ensures that this is called from within objStrand
 void JSContextStruct::httpFail(v8::Persistent<v8::Function> cb,const String& failureReason )
 {
     // FIXME we really shouldn't need this, but JSObjectScript doesn't hold
@@ -65,6 +70,7 @@ void JSContextStruct::httpFail(v8::Persistent<v8::Function> cb,const String& fai
         return;
     }
 
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext);
     v8::Handle<v8::Value> argv[2] = { v8::Boolean::New(false), v8::String::New(failureReason.c_str(),failureReason.size())};
@@ -80,6 +86,7 @@ void JSContextStruct::httpSuccess(v8::Persistent<v8::Function> cb,EmersonHttpMan
         return;
     }
 
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext);
     v8::Handle<v8::Object> httpObj = v8::Object::New();
@@ -180,6 +187,15 @@ v8::Handle<v8::Value> JSContextStruct::struct_evalInGlobal(const String& native_
 }
 
 
+v8::Handle<v8::Value> JSContextStruct::pushEvalContextScopeDirectory(const String& newDir)
+{
+    return jsObjScript->pushEvalContextScopeDirectory(newDir);
+}
+
+v8::Handle<v8::Value> JSContextStruct::popEvalContextScopeDirectory()
+{
+    return jsObjScript->popEvalContextScopeDirectory();
+}
 
 
 v8::Handle<v8::Value> JSContextStruct::emersonCompileString(const String& toCompile)
@@ -231,12 +247,12 @@ v8::Handle<v8::Value> JSContextStruct::setRestoreScript(const String& key, v8::H
 }
 
 
-v8::Handle<v8::Value>JSContextStruct::debug_fileWrite(const String& strToWrite,const String& filename)
+v8::Handle<v8::Value>JSContextStruct::debug_fileWrite(String& strToWrite,String& filename)
 {
     return jsObjScript->debug_fileWrite(strToWrite,filename);
 }
 
-v8::Handle<v8::Value> JSContextStruct::debug_fileRead(const String& filename)
+v8::Handle<v8::Value> JSContextStruct::debug_fileRead(String& filename)
 {
     return jsObjScript->debug_fileRead(filename);
 }
@@ -355,7 +371,7 @@ v8::Handle<v8::Value>  JSContextStruct::checkHeadless()
 }
 
 
-v8::Handle<v8::Value> JSContextStruct::struct_create_vis(const SpaceObjectReference& sporefWatching, JSProxyPtr addParams)
+v8::Handle<v8::Value> JSContextStruct::struct_create_vis(const SpaceObjectReference& sporefWatching, JSVisibleDataPtr addParams)
 {
     v8::HandleScope handle_scope;
     CHECK_EMERSON_SCRIPT_ERROR(emerScript,create_vis,jsObjScript);
@@ -603,6 +619,8 @@ v8::Handle<v8::Value> JSContextStruct::struct_rootReset()
 //should have called clear before got to destructor
 JSContextStruct::~JSContextStruct()
 {
+    Liveness::letDie();
+
     clear();
     delete mSystem;
     delete mUtil;
@@ -687,19 +705,22 @@ void JSContextStruct::finishClear()
 
 
     v8::HandleScope handle_scope;
-    v8::Handle<v8::Value> returner = JSSuspendable::clear();
+    JSSuspendable::clear();
 
 
     inClear = true;
     JSLOG(insane,"Clearing context.");
-
 
     mInSuspendableLoop = true;
     //when a suspendable gets cleared, it calls deregister_suspendable of
     //JSContextStruct directly.  All deletion is done in that method or when
     //flushing queued methods.
     for (SuspendableIter iter = associatedSuspendables.begin(); iter != associatedSuspendables.end(); ++iter)
-        iter->first->clear();
+    {
+        JSSuspendable* jssusp = iter->first;
+        jssusp->clear();
+    }
+
     mInSuspendableLoop = false;
     flushQueuedSuspendablesToChange();
 
@@ -748,7 +769,39 @@ void JSContextStruct::struct_registerSuspendable   (JSSuspendable* toRegister)
 }
 
 
-void JSContextStruct::struct_deregisterSuspendable (JSSuspendable* toDeregister)
+void JSContextStruct::struct_asyncDeregisterSuspendable (
+    JSSuspendable* toDeregister,Liveness::Token contAlive,
+    Liveness::Token suspAlive)
+{
+
+    if (!contAlive)
+    {
+        //the context is not still alive.
+        if (!suspAlive)
+            return;
+
+        //context isn't still alive, but the suspendable
+        //is. delete it straightaway.
+        delete toDeregister;
+    }
+    else
+    {
+        //lkjs;
+        //FIXME: These seem as though they really should be
+        //a locked condition
+        if (!suspAlive)
+            return;
+
+        Liveness::Lock lockedCont(contAlive);
+        //context and suspendable are still alive.  go
+        //ahead and delete normally.
+        struct_deregisterSuspendable(toDeregister);
+    }
+}
+
+
+void JSContextStruct::struct_deregisterSuspendable (
+    JSSuspendable* toDeregister)
 {
     if (mInSuspendableLoop)
     {
@@ -781,8 +834,7 @@ void JSContextStruct::struct_deregisterSuspendable (JSSuspendable* toDeregister)
         return;
     }
 
-
-    //if it's just a timer or a context, can delete without requesting
+    //if it's just a context, can delete without requesting
     //Emerscript to do anything special.
     delete toDeregister;
 }

@@ -149,6 +149,7 @@ public:
     virtual TrackingType type(const UUID& uuid) const = 0;
 
     /** Methods dealing with information requests. */
+    virtual uint64 epoch(const UUID& uuid) = 0;
     virtual TimedMotionVector3f location(const UUID& uuid) = 0;
     virtual Vector3f currentPosition(const UUID& uuid) = 0;
     virtual TimedMotionQuaternion orientation(const UUID& uuid) = 0;
@@ -231,13 +232,12 @@ protected:
     void notifyReplicaMeshUpdated(const UUID& uuid, const String& newval) const;
     void notifyReplicaPhysicsUpdated(const UUID& uuid, const String& newval) const;
 
-    // Helper for listening for datagrams
-    void handleLocationUpdateDatagram(UUID source, void* buffer, uint32 length);
     // Helpers for listening to streams
     typedef SST::Stream<SpaceObjectReference> SSTStream;
     typedef SSTStream::Ptr SSTStreamPtr;
     void handleLocationUpdateSubstream(const UUID& source, int err, SSTStreamPtr s);
     void handleLocationUpdateSubstreamRead(const UUID& source, SSTStreamPtr s, std::stringstream* prevdata, uint8* buffer, int length);
+    void tryHandleLocationUpdate(const UUID& source, SSTStreamPtr s, const String& payload, std::stringstream* prevdata);
 
     SpaceContext* mContext;
 private:

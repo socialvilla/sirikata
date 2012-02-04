@@ -38,12 +38,15 @@ struct JSSystemStruct
     v8::Handle<v8::Value> struct_canProxChangeQuery();
     v8::Handle<v8::Value> struct_canImport();
 
+    v8::Handle<v8::Value> pushEvalContextScopeDirectory(const String& newDir);
+    v8::Handle<v8::Value> popEvalContextScopeDirectory();
+    
     v8::Handle<v8::Value> checkResources();
     v8::Handle<v8::Value> struct_evalInGlobal(const String& native_contents, ScriptOrigin* sOrigin);
     v8::Handle<v8::Value> checkHeadless();
 
     v8::Handle<v8::Value> getAssociatedPresence();
-    
+
     v8::Handle<v8::Value> storageBeginTransaction();
     v8::Handle<v8::Value> storageCommit(v8::Handle<v8::Function> cb);
     v8::Handle<v8::Value> storageWrite(const OH::Storage::Key& key, const String& toWrite, v8::Handle<v8::Function> cb);
@@ -77,7 +80,7 @@ struct JSSystemStruct
 
     v8::Handle<v8::Value> emersonCompileString(const String& toCompile);
 
-    v8::Handle<v8::Value> struct_create_vis(const SpaceObjectReference& sporefWatching, JSProxyPtr addParams)
+    v8::Handle<v8::Value> struct_create_vis(const SpaceObjectReference& sporefWatching, JSVisibleDataPtr addParams)
     {
         return associatedContext->struct_create_vis(sporefWatching,addParams);
     }
@@ -86,8 +89,8 @@ struct JSSystemStruct
     v8::Handle<v8::Value> restorePresence(PresStructRestoreParams& psrp);
 
 
-    v8::Handle<v8::Value> debug_fileWrite(const String& strToWrite,const String& filename);
-    v8::Handle<v8::Value> debug_fileRead(const String& filename);
+    v8::Handle<v8::Value> debug_fileWrite(String& strToWrite,String& filename);
+    v8::Handle<v8::Value> debug_fileRead(String& filename);
 
     v8::Handle<v8::Value> httpRequest(Sirikata::Network::Address addr, Transfer::HttpManager::HTTP_METHOD method, String request, v8::Persistent<v8::Function> cb);
 
@@ -131,28 +134,28 @@ struct JSSystemStruct
 
 
     Capabilities::CapNum getCapNum();
-    
+
 private:
 
    /**
       @param {Capabilities::CapNum} The requested amount of capabilities.
       @param {Capabilities::Caps} capRequesting Capability that scripter is
       requesting to imbue into new sandbox.
-      
+
       @param {JSPresenceStruct} jspres Default presence for new sandbox.
-   
+
       If scripter is trying to request capabilities that the initial sandbox he/she
       is creating does not have, strips those capabilities.
    */
     void stripCapEscalation(Capabilities::CapNum& permNum, Capabilities::Caps capRequesting, JSPresenceStruct* jspres, const String& capRequestingName);
-    
+
 
     //returns true if you have capability to perform the operation associated with
     //capRequesting on jspres, false otherwise.  Note: pass null to jspres if
     //requesting a capability not associated with a presence.  (See list of
     //these in JSCapabilitiesConsts.hpp.)
     bool checkCurCtxtHasCapability(JSPresenceStruct* jspres, Capabilities::Caps capRequesting);
-    
+
     //associated data
     JSContextStruct* associatedContext;
     uint32 mCapNum;

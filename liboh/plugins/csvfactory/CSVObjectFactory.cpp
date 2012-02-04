@@ -31,22 +31,36 @@
  */
 
 #include "CSVObjectFactory.hpp"
-#include <list>
 #include <sirikata/oh/Platform.hpp>
 #include <sirikata/oh/HostedObject.hpp>
-#include <vector>
-
+#include <boost/filesystem.hpp>
 
 namespace Sirikata {
 
-CSVObjectFactory::CSVObjectFactory(ObjectHostContext* ctx, ObjectHost* oh, const SpaceID& space, const String& filename, int32 max_objects, int32 connect_rate)
+CSVObjectFactory::CSVObjectFactory(ObjectHostContext* ctx, ObjectHost* oh, const SpaceID& space, const std::list<String>& search_paths, const String& filename, int32 max_objects, int32 connect_rate)
  : mContext(ctx),
    mOH(oh),
    mSpace(space),
-   mFilename(filename),
+   mFilename(),
    mMaxObjects(max_objects),
    mConnectRate(connect_rate)
 {
+    using namespace boost::filesystem;
+
+    // Find the file while we have the search paths
+    for (std::list<String>::const_iterator pit = search_paths.begin(); pit != search_paths.end(); pit++) {
+        path base_path(*pit);
+        path fq = base_path / filename;
+        try {
+            if (boost::filesystem::exists(fq)) {
+                mFilename = fq.string();
+                return;
+            }
+        } catch (boost::filesystem::filesystem_error) {
+            // Ignore, this just means we don't have access to some directory so
+            // we can't check for its existence.
+        }
+    }
 }
 
 template<typename T>
@@ -153,8 +167,7 @@ void CSVObjectFactory::generate(const String& timestamp)
     int script_contents_idx = -1;
     int scale_idx = -1;
     int objid_idx = -1;
-    int solid_angle_idx = -1;
-    int max_results_idx = -1;
+    int query_idx = -1;
     int physics_opts_idx = -1;
 
     // For each line
@@ -191,14 +204,7 @@ void CSVObjectFactory::generate(const String& timestamp)
                 {
                     objid_idx = idx;
                 }
-                if(line_parts[idx] == "solid_angle")
-                {
-                    solid_angle_idx = idx;
-                }
-                if(line_parts[idx] == "max_results")
-                {
-                    max_results_idx = idx;
-                }
+                if(line_parts[idx] == "query") query_idx = idx;
                 if (line_parts[idx] == "physics") physics_opts_idx = idx;
             }
 
@@ -272,21 +278,10 @@ void CSVObjectFactory::generate(const String& timestamp)
                     1.f :
                     safeLexicalCast<float>(line_parts[scale_idx], 1.f);
 
-                String solid_angle = "";
-                SolidAngle query_angle(SolidAngle::Max);
-
-                if(solid_angle_idx != -1)
-                {
-                  solid_angle = line_parts[solid_angle_idx];
-                  if(solid_angle != "")
-                  {
-
-                    query_angle = SolidAngle(atof(solid_angle.c_str()));
-                  }
-                }
-
-                uint32 max_results = (max_results_idx == -1) ? 0 :
-                    safeLexicalCast<uint32>(line_parts[max_results_idx], 0);
+                String query_opts =
+                    query_idx == -1 ?
+                    "" :
+                    line_parts[query_idx];
 
                 String physics_opts =
                     physics_opts_idx == -1 ?
@@ -321,8 +316,7 @@ void CSVObjectFactory::generate(const String& timestamp)
                 oci.loc = Location( pos, orient, vel, rot_axis, angular_speed);
                 oci.bounds = BoundingSphere3f(Vector3f::zero(), scale);
                 oci.mesh = mesh;
-                oci.query_angle = query_angle;
-                oci.query_max_results = max_results;
+                oci.query = query_opts;
                 oci.physics = physics_opts;
                 mIncompleteObjects.push(oci);
 
@@ -349,11 +343,7 @@ void CSVObjectFactory::connectObjects()
 
         oci.object->connect(
             mSpace,
-            oci.loc, oci.bounds, oci.mesh, oci.physics,
-            const_cast<SolidAngle&>(oci.query_angle),
-            oci.query_max_results,
-            UUID::null(),
-            ObjectReference::null()
+            oci.loc, oci.bounds, oci.mesh, oci.physics, oci.query
         );
     }
 

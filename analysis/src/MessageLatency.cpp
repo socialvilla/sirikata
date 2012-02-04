@@ -199,8 +199,8 @@ std::ostream& operator<<(std::ostream& os, const PacketSampleList& rhs) {
 class PacketData {
   public:
     uint64 id;
-    uint16 source_port;
-    uint16 dest_port;
+    ObjectMessagePort source_port;
+    ObjectMessagePort dest_port;
 
     typedef std::map<uint32, PacketSampleList> ServerPacketMap;
 
@@ -585,7 +585,6 @@ class PacketStageGraph {
         }
         while(!sorted_unused_samples.empty()) {
             // Take the next earliest
-            Time us_time = sorted_unused_samples.begin()->first;
             UnusedSamples us = sorted_unused_samples.begin()->second;
             sorted_unused_samples.erase( sorted_unused_samples.begin() );
 
@@ -814,7 +813,7 @@ void reportStats(PathPair pp, PathAverageMap* pam) {
 
 } // namespace
 
-MessageLatencyFilters::MessageLatencyFilters(uint16 *destPort, const uint32*filterByCreationServer,const uint32 *filterByDestructionServer, const uint32*filterByForwardingServer, const uint32 *filterByDeliveryServer) {
+MessageLatencyFilters::MessageLatencyFilters(ObjectMessagePort *destPort, const uint32*filterByCreationServer,const uint32 *filterByDestructionServer, const uint32*filterByForwardingServer, const uint32 *filterByDeliveryServer) {
     mDestPort=destPort;
     mFilterByCreationServer=filterByCreationServer;
     mFilterByDestructionServer=filterByDestructionServer;

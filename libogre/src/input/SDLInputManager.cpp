@@ -36,6 +36,7 @@
 #endif
 
 #include <sirikata/proxyobject/Platform.hpp>
+#include <sirikata/sdl/SDL.hpp>
 #include <SDL.h>
 #include <SDL_video.h>
 #include <SDL_syswm.h>
@@ -48,6 +49,7 @@
 
 #include <sirikata/core/task/WorkQueue.hpp>
 #include <sirikata/core/util/Time.hpp>
+#include <sirikata/core/options/Options.hpp>
 
 #include <sirikata/ogre/input/SDLInputManager.hpp>
 #include <sirikata/ogre/input/InputEvents.hpp>
@@ -93,41 +95,38 @@ void SDLKeyRepeatInfo::unrepeat(uint32 key) {
 }
 
 
-static const IdPair::Primary &getWindowEventId(SDL_WindowEventID sdlId) {
-
-    static IdPair::Primary unknownId("UnknownWindowEvent");
-
+static WindowEvent::WindowEventName getWindowEventId(SDL_WindowEventID sdlId) {
     switch (sdlId) {
       case SDL_WINDOWEVENT_NONE:
-        return unknownId;
+        return WindowEvent::Unknown;
       case SDL_WINDOWEVENT_SHOWN:
-        return WindowEvent::Shown();
+        return WindowEvent::WindowShown;
       case SDL_WINDOWEVENT_HIDDEN:
-        return WindowEvent::Hidden();
+        return WindowEvent::WindowHidden;
       case SDL_WINDOWEVENT_EXPOSED:
-        return WindowEvent::Exposed();
+        return WindowEvent::WindowExposed;
       case SDL_WINDOWEVENT_MOVED:
-        return WindowEvent::Moved();
+        return WindowEvent::WindowMoved;
       case SDL_WINDOWEVENT_RESIZED:
-        return WindowEvent::Resized();
+        return WindowEvent::WindowResized;
       case SDL_WINDOWEVENT_MINIMIZED:
-        return WindowEvent::Minimized();
+        return WindowEvent::WindowMinimized;
       case SDL_WINDOWEVENT_MAXIMIZED:
-        return WindowEvent::Maximized();
+        return WindowEvent::WindowMaximized;
       case SDL_WINDOWEVENT_RESTORED:
-        return WindowEvent::Restored();
+        return WindowEvent::WindowRestored;
       case SDL_WINDOWEVENT_ENTER:
-        return WindowEvent::MouseEnter();
+        return WindowEvent::WindowMouseEnter;
       case SDL_WINDOWEVENT_LEAVE:
-        return WindowEvent::MouseLeave();
+        return WindowEvent::WindowMouseLeave;
       case SDL_WINDOWEVENT_FOCUS_GAINED:
-        return WindowEvent::FocusGained();
+        return WindowEvent::WindowFocused;
       case SDL_WINDOWEVENT_FOCUS_LOST:
-        return WindowEvent::FocusLost();
+        return WindowEvent::WindowUnfocused;
       case SDL_WINDOWEVENT_CLOSE:
-        return WindowEvent::Quit();
+        return WindowEvent::WindowQuit;
     }
-    return unknownId;
+    return WindowEvent::Unknown;
 }
 
 SDLInputManager::InitializationException::InitializationException(const String& msg)
@@ -144,15 +143,18 @@ const char* SDLInputManager::InitializationException::what() const throw() {
 
 
 SDLInputManager::SDLInputManager(Graphics::OgreRenderer* parent, unsigned int width,unsigned int height, bool fullscreen, bool grabCursor, void *&currentWindow)
- : InputManager(new Task::ThreadSafeWorkQueue),
-   mParent(parent)
+ : InputManager(),
+   mParent(parent),
+   mInitialized(false)
 {
     mWindowContext=0;
     mWidth = width;
     mHasKeyboardFocus = true;
     mHeight = height;
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_NOPARACHUTE) < 0)
-        throw InitializationException("SDL_Init failed.");
+    if (SDL::InitializeSubsystem(SDL::Subsystem::Video) < 0)
+        throw InitializationException("Failed to initialize SDL video.");
+    else
+        mInitialized = true;
 
 #if 1
     if (currentWindow) {
@@ -291,7 +293,7 @@ void SDLInputManager::filesDropped(const std::vector<std::string> &files) {
 		SILOG(input,info,"File '" << files[i] << "' has been dropped on the window");
         allFiles.push_back(files[i]);
     }
-    fire(Task::EventPtr(new DragAndDropEvent(files)));
+    fire(DragAndDropEventPtr(new DragAndDropEvent(files)));
 }
 
 bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
@@ -302,14 +304,12 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
     bool continueRendering=true;
     while(SDL_PollEvent(&event[0]))
     {
-        EventPtr toFire;
         switch(event->type)
         {
           case SDL_KEYUP:
             if (!keyIsModifier((unsigned int)event->key.keysym.scancode)) {
                 mKeys[event->key.which]->fireButton(
                     mKeys[event->key.which],
-                    this,
                     (unsigned int)event->key.keysym.scancode,
                     (event->key.state == SDL_PRESSED),
                     modifiersFromSDL(event->key.keysym.mod));
@@ -323,7 +323,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
                 if (!mLastKeys[event->key.which]->isRepeating((uint32)event->key.keysym.scancode)) {
                     mKeys[event->key.which]->fireButton(
                         mKeys[event->key.which],
-                        this,
                         (unsigned int)event->key.keysym.scancode,
                         (event->key.state == SDL_PRESSED),
                         modifiersFromSDL(event->key.keysym.mod));
@@ -340,19 +339,16 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
                   float amt = (event->button.button == SDL_BUTTON_WHEELUP) ? 1 : -1; /* Magnitude chosen arbitrarily... */
                   mMice[event->button.which]->fireWheel(
                       mMice[event->button.which],
-                      this,
                       0,
                       amt);
               } else {
                   mMice[event->button.which]->fireButton(
                       mMice[event->button.which],
-                      this,
                       event->button.button,
                       (event->button.state == SDL_PRESSED),
                       (1<<SDL_GetCurrentCursor(event->button.which))>>1);
                   mMice[event->button.which]->firePointerClick(
                       mMice[event->button.which],
-                      this,
                       (2.0*(float)event->button.x)/mWidth - 1,
                       1 - (2.0*(float)event->button.y)/mHeight,
                       SDL_GetCurrentCursor(event->button.which),
@@ -366,14 +362,13 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
           if (mHasKeyboardFocus) {
             mJoy[event->jbutton.which]->fireButton(
                 mJoy[event->jbutton.which],
-                this,
                 event->jbutton.button,
                 event->jbutton.state == SDL_PRESSED);
             }
             break;
           case SDL_TEXTINPUT:
           if (mHasKeyboardFocus) {
-            fire(Task::EventPtr(new TextInputEvent(
+            fire(TextInputEventPtr(new TextInputEvent(
                                     mKeys[event->text.which],
                                     event->text.text)));
             }
@@ -382,7 +377,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
           if (mHasKeyboardFocus) {
             mMice[event->motion.which]->fireMotion(
                 mMice[event->motion.which],
-                this,
                 event->motion);
             }
             break;
@@ -390,7 +384,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
           if (mHasKeyboardFocus) {
             mMice[event->wheel.which]->fireWheel(
                 mMice[event->wheel.which],
-                this,
                 event->wheel.x,
                 event->wheel.y);
             }
@@ -399,7 +392,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
           if (mHasKeyboardFocus) {
             mJoy[event->wheel.which]->fireAxis(
                 mJoy[event->wheel.which],
-                this,
                 event->jaxis.axis,
                 AxisValue::fromCentered(event->jaxis.value/32767.));
             }
@@ -408,7 +400,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
           if (mHasKeyboardFocus) {
             mJoy[event->wheel.which]->fireHat(
                 mJoy[event->wheel.which],
-                this,
                 event->jhat.hat,
                 event->jhat.value);
             }
@@ -417,7 +408,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
           if (mHasKeyboardFocus) {
             mJoy[event->wheel.which]->fireBall(
                 mJoy[event->wheel.which],
-                this,
                 event->jball.ball,
                 event->jball.xrel,
                 event->jball.yrel);
@@ -464,7 +454,7 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
                 mHeight = (unsigned int)hei;
             }
 
-            fire(Task::EventPtr(new WindowEvent(
+            fire(WindowEventPtr(new WindowEvent(
                     getWindowEventId((SDL_WindowEventID)event->window.event),
                     event->window.data1,
                     event->window.data2)));
@@ -490,7 +480,7 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
             break;
 
           case SDL_QUIT:
-            fire(Task::EventPtr(new WindowEvent(WindowEvent::Quit(), -1, -1)));
+            fire(WindowEventPtr(new WindowEvent(WindowEvent::WindowQuit, -1, -1)));
             // FIXME: Quit only when the event has been successfully processed
             // and only if nobody has canceled it (i.e. a confirmation dialog)
             SILOG(ogre,debug,"quitting\n");
@@ -508,7 +498,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
             SDL_Event* evt = it->second;
             mKeys[evt->key.which]->fireButton(
                 mKeys[evt->key.which],
-                this,
                 (unsigned int)evt->key.keysym.scancode,
                 true,
                 modifiersFromSDL(evt->key.keysym.mod));
@@ -528,7 +517,6 @@ bool SDLInputManager::tick(Task::LocalTime currentTime, Duration frameTime){
     }
     SDL_SelectMouse(oldmouse);
     */
-    getWorkQueue()->dequeueUntil(Task::LocalTime::now()+Duration::seconds(.01));
     return continueRendering;
 
 }
@@ -568,8 +556,8 @@ bool SDLInputManager::isScrollLockDown() const {
 SDLInputManager::~SDLInputManager(){
     SDL_GL_DeleteContext(mWindowContext);
     SDL_DestroyWindow(mWindowID);
-    SDL_Quit();
-	delete getWorkQueue();
+    if (mInitialized)
+        SDL::QuitSubsystem(SDL::Subsystem::Video);
 }
 
 } }

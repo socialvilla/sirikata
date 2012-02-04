@@ -34,6 +34,7 @@
 #define _SIRIKATA_SERIALIZATION_CHECK_HPP_
 
 #include <sirikata/core/util/Platform.hpp>
+#include <sirikata/core/util/AtomicTypes.hpp>
 
 #include <boost/thread/thread.hpp>
 
@@ -73,12 +74,15 @@ public:
 
 
     SerializationCheck()
+#if SIRIKATA_DEBUG
      : mAccessors(0),
        mThreadID()
+#endif //SIRIKATA_DEBUG
     {
     }
 
     inline void serializedEnter() const {
+#if SIRIKATA_DEBUG
         int32 val = ++mAccessors;
 
         assert(val >= 1);
@@ -93,9 +97,11 @@ public:
             // match ours
             assert(mThreadID == boost::this_thread::get_id());
         }
+#endif //SIRIKATA_DEBUG
     }
 
     inline void serializedExit() const {
+#if SIRIKATA_DEBUG
         if (mAccessors == (int32)1) {
             // We should be the only one left accessing this and a
             // serializedEnter should *not* be getting called, so we
@@ -105,8 +111,10 @@ public:
 
         int32 val = --mAccessors;
         assert(val >= 0);
+#endif //SIRIKATA_DEBUG
     }
 private:
+#if SIRIKATA_DEBUG
     // Implementation Note: Technically this isn't all thread safe.  However,
     // the core component which tracks the number of accessors and their order
     // off access is thread safe. Any thread-unsafe accesses should only result
@@ -115,6 +123,7 @@ private:
     // to access shared data (including this object) at the same time.
     mutable AtomicValue<int32> mAccessors;
     mutable boost::thread::id mThreadID;
+#endif //SIRIKATA_DEBUG
 };
 
 } // namespace Sirikata

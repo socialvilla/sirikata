@@ -34,7 +34,7 @@ if [ xdebug = x"$debug" ]; then
   binname="$binname"_d
 fi
 
-binoutdir="$outdir/bin"
+binoutdir="$outdir/lib/sirikata"
 liboutdir="$outdir/lib"
 appname="$binname.app"
 appoutdir="$binoutdir/$appname"
@@ -64,14 +64,9 @@ for exe in berkelium libplugin_carbon_interpose.dylib "$binname"; do
     chmod +x "$binoutdir/$exe"
 done
 
-echo "Installing shared library $lib ..."
-./bin_replace "$PWD/$lib" '@executable_path/../lib/'"$lib" < "$lib" | \
-    ./bin_replace "$PWD/" 'Berkelium/' > "$liboutdir/$lib"
-chmod +x "$liboutdir/$lib"
-
 echo "Installing $appname"
 mkdir -p "$appoutdir/Contents/MacOS"
-ln -fs '../../../lib' "$appoutdir/Contents/lib"
+ln -fs '../../..' "$appoutdir/Contents/lib"
 ln -fs '../../../Frameworks' "$appoutdir/Contents/Frameworks"
 for exe in berkelium libplugin_carbon_interpose.dylib "$binname"; do
     cp "$binoutdir/$exe" "$appoutdir/Contents/MacOS/$exe"

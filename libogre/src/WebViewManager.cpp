@@ -88,41 +88,14 @@ WebViewManager::WebViewManager(Ogre::Viewport* defaultViewport, InputManager* in
     tooltipWebView = 0;
     DynamicLibrary::AddLoadPath(binDirectory);
 #ifdef HAVE_BERKELIUM
+#if BERKELIUM_REMOTE_DEBUGGING
+    unsigned int extra_argc = 1;
+    const char* extra_argv[] = { "--remote-debugging-port=9222", NULL };
+    Berkelium::init(Berkelium::FileString::empty(), Berkelium::FileString::empty(), extra_argc, extra_argv);
+#else
     Berkelium::init(Berkelium::FileString::empty());
-    bkContext = Berkelium::Context::create();
 #endif
-#ifdef HAVE_BERKELIUM
-/*
-        // flash test
-        WebView *mychromeWebView = createWebView("yahoo", 800, 600, OverlayPosition(RP_TOPLEFT), false, 70);
-        mychromeWebView->loadURL("http://yahoo.com/");
-
-        // <video> tag test
-        mychromeWebView = createWebView("videotag", 800, 600, OverlayPosition(RP_TOPLEFT), false, 70);
-        mychromeWebView->loadURL("http://people.xiph.org/~maikmerten/demos/bigbuckbunny-videoonly.html");
-        // flash video test
-        mychromeWebView = createWebView("youtube", 800, 600, OverlayPosition(RP_TOPRIGHT), false, 70);
-        mychromeWebView->loadURL("http://www.youtube.com/watch?v=oHg5SJYRHA0");
-        mychromeWebView->setTransparent(true);
-*/
-/*
-        chromeWebView = createWebView("__chrome", "__chrome", 410, 40, OverlayPosition(RP_TOPCENTER), false, 70, TIER_FRONT);
-        chromeWebView->loadFile("chrome/navbar.html");
-*/
-        /*
-        WebView *mychromeWebView = createWebView("google", 400, 300, OverlayPosition(RP_BOTTOMLEFT), false, 70);
-        mychromeWebView->loadURL("http://google.com/");
-        mychromeWebView->setTransparent(true);
-        mychromeWebView->focus();
-        */
-/*
-        mychromeWebView = createWebView("xahoo", 800, 600, OverlayPosition(RP_TOPRIGHT), false, 70);
-        mychromeWebView->loadURL("http://www.adobe.com/aboutadobe/contact.html");
-        mychromeWebView->setTransparent(true);
-        mychromeWebView = createWebView("GoOGLE", 800, 600, OverlayPosition(RP_TOPRIGHT), false, 70);
-        mychromeWebView->loadURL(http://dunnbypaul.net/js_mouse/");
-        mychromeWebView->setTransparent(false);
-*/
+    bkContext = Berkelium::Context::create();
 #endif
 }
 
@@ -199,7 +172,13 @@ void WebViewManager::Update()
 }
 
 
-WebView* WebViewManager::createWebView(Context* ctx, const std::string &webViewName, const std::string& webViewType,unsigned short width, unsigned short height, const OverlayPosition &webViewPosition,bool asyncRender, int maxAsyncRenderRate, Tier tier, Ogre::Viewport* viewport, const WebView::WebViewBorderSize& border)
+WebView* WebViewManager::createWebView(
+    Context* ctx, const std::string &webViewName,
+    const std::string& webViewType,unsigned short width,
+    unsigned short height, const OverlayPosition &webViewPosition,
+    Network::IOStrandPtr postStrand,
+    bool asyncRender, int maxAsyncRenderRate, Tier tier,
+    Ogre::Viewport* viewport, const WebView::WebViewBorderSize& border)
 {
 	if(activeWebViews.find(webViewName) != activeWebViews.end())
 		OGRE_EXCEPT(Ogre::Exception::ERR_RT_ASSERTION_FAILED,
@@ -220,8 +199,13 @@ WebView* WebViewManager::createWebView(Context* ctx, const std::string &webViewN
 		zOrder = highestZOrder + 1;
 
 
-        WebView* newWebView = new WebView(ctx, webViewName, webViewType,width, height, webViewPosition, (Ogre::uchar)zOrder, tier,
-            viewport? viewport : defaultViewport, border);
+        WebView* newWebView =
+            new WebView(
+                ctx, webViewName, webViewType,width, height,
+                webViewPosition, (Ogre::uchar)zOrder, tier,
+                viewport? viewport : defaultViewport,postStrand,
+                border);
+        
         newWebView->createWebView(false);
 	activeWebViews[webViewName] = newWebView;
         newWebView->bind("event", std::tr1::bind(&WebViewManager::onRaiseWebViewEvent, this, _1, _2));
@@ -229,8 +213,13 @@ WebView* WebViewManager::createWebView(Context* ctx, const std::string &webViewN
 }
 
 #ifdef HAVE_BERKELIUM
-WebView* WebViewManager::createWebViewPopup(Context* ctx, const std::string &webViewName, unsigned short width, unsigned short height, const OverlayPosition &webViewPosition,
-		Berkelium::Window *newwin, Tier tier, Ogre::Viewport* viewport)
+WebView* WebViewManager::createWebViewPopup(
+    Context* ctx, const std::string &webViewName,
+    unsigned short width, unsigned short height,
+    const OverlayPosition &webViewPosition,
+    Berkelium::Window *newwin,
+    Network::IOStrandPtr postingStrand,
+    Tier tier, Ogre::Viewport* viewport)
 {
 	if(activeWebViews.find(webViewName) != activeWebViews.end())
 		OGRE_EXCEPT(Ogre::Exception::ERR_RT_ASSERTION_FAILED,
@@ -250,8 +239,15 @@ WebView* WebViewManager::createWebViewPopup(Context* ctx, const std::string &web
 	if(highestZOrder != -1)
 		zOrder = highestZOrder + 1;
 
-        WebView* newWebView = new WebView(ctx, webViewName, "___popup___", width, height, webViewPosition, (Ogre::uchar)zOrder, tier,
-            viewport? viewport : defaultViewport);
+
+        
+        WebView* newWebView =
+            new WebView(
+                ctx, webViewName, "___popup___", width,
+                height, webViewPosition, (Ogre::uchar)zOrder, tier,
+                viewport? viewport : defaultViewport, postingStrand);
+
+        
         newWebView->initializeWebView(newwin, false);
 	activeWebViews[webViewName] = newWebView;
         newWebView->bind("event", std::tr1::bind(&WebViewManager::onRaiseWebViewEvent, this, _1, _2));
@@ -259,15 +255,23 @@ WebView* WebViewManager::createWebViewPopup(Context* ctx, const std::string &web
         return newWebView;
 }
 #endif //HAVE_BERKELIUM
-WebView* WebViewManager::createWebViewMaterial(Context* ctx, const std::string &webViewName, unsigned short width, unsigned short height,
-			bool asyncRender, int maxAsyncRenderRate, Ogre::FilterOptions texFiltering)
+WebView* WebViewManager::createWebViewMaterial(
+    Context* ctx, const std::string &webViewName,
+    unsigned short width, unsigned short height,
+    Network::IOStrandPtr postingStrand,
+    bool asyncRender, int maxAsyncRenderRate,
+    Ogre::FilterOptions texFiltering)
 {
 	if(activeWebViews.find(webViewName) != activeWebViews.end())
 		OGRE_EXCEPT(Ogre::Exception::ERR_RT_ASSERTION_FAILED,
 			"An attempt was made to create a WebView named '" + webViewName + "' when a WebView by the same name already exists!",
 			"WebViewManager::createWebViewMaterial");
 
-        WebView* newWebView = new WebView(ctx, webViewName, "___material___", width, height, texFiltering);
+        
+        WebView* newWebView =
+            new WebView(ctx, webViewName, "___material___",
+                width, height, texFiltering,postingStrand);
+        
         newWebView->createWebView(false);
         activeWebViews[webViewName] = newWebView;
         newWebView->bind("event", std::tr1::bind(&WebViewManager::onRaiseWebViewEvent, this, _1, _2));
@@ -677,83 +681,61 @@ boost::any WebViewManager::onRaiseWebViewEvent(WebView* webview, const JSArgumen
     JSArguments event_args;
     event_args.insert(event_args.begin(), args.begin() + 1, args.end());
 
-    mInputManager->fire(Task::EventPtr( new WebViewEvent(webview->getName(), args) ));
+    mInputManager->fire(WebViewEventPtr( new WebViewEvent(webview->getName(), args) ));
 #endif
     return boost::any();
 }
 
 
 
-Sirikata::Task::EventResponse WebViewManager::onMouseMove(Sirikata::Task::EventPtr evt)
+Input::EventResponse WebViewManager::onMouseHover(Input::MouseHoverEventPtr evt)
 {
-    MouseEventPtr e = std::tr1::dynamic_pointer_cast<MouseEvent>(evt);
-    if (!e) {
-        return Sirikata::Task::EventResponse::nop();
-    }
-
-    this->injectMouseMove(InputCoordToWebViewCoord(e, e->mX, e->mY));
-
-    return Sirikata::Task::EventResponse::nop();
+    this->injectMouseMove(InputCoordToWebViewCoord(evt, evt->mX, evt->mY));
+    return Input::EventResponse::nop();
 }
 
-Sirikata::Task::EventResponse WebViewManager::onMouseClick(Sirikata::Task::EventPtr evt)
+Input::EventResponse WebViewManager::onMouseClick(Input::MouseClickEventPtr evt)
 {
+    this->injectMouseMove(InputCoordToWebViewCoord(evt, evt->mX, evt->mY));
 
-    MouseDownEventPtr e = std::tr1::dynamic_pointer_cast<MouseDownEvent>(evt);
-    if (!e) {
-        return Sirikata::Task::EventResponse::nop();
-    }
-
-    this->injectMouseMove(InputCoordToWebViewCoord(e, e->mX, e->mY));
-
-    int wvbutton = InputButtonToWebViewButton(e->mButton);
+    int wvbutton = InputButtonToWebViewButton(evt->mButton);
     if (wvbutton == UnknownMouseButton)
-        return Sirikata::Task::EventResponse::nop();
+        return Input::EventResponse::nop();
 
     bool success = this->injectMouseUp(wvbutton);
 
     if (success) {
-        return Sirikata::Task::EventResponse::cancel();
+        return Input::EventResponse::cancel();
     } else {
-        return Sirikata::Task::EventResponse::nop();
+        return Input::EventResponse::nop();
     }
 }
-Sirikata::Task::EventResponse WebViewManager::onMousePressed(Sirikata::Task::EventPtr evt) {
-    MousePressedEventPtr e = std::tr1::dynamic_pointer_cast<MousePressedEvent>(evt);
-    if (!e) {
-        return Sirikata::Task::EventResponse::nop();
-    }
+Input::EventResponse WebViewManager::onMousePressed(Input::MousePressedEventPtr evt) {
+    this->injectMouseMove(InputCoordToWebViewCoord(evt, evt->mX, evt->mY));
 
-    this->injectMouseMove(InputCoordToWebViewCoord(e, e->mX, e->mY));
-
-    int wvbutton = InputButtonToWebViewButton(e->mButton);
+    int wvbutton = InputButtonToWebViewButton(evt->mButton);
     if (wvbutton == UnknownMouseButton)
-        return Sirikata::Task::EventResponse::nop();
+        return Input::EventResponse::nop();
 
     bool success = this->injectMouseDown(wvbutton);
 
 	if (success) {
-		return Sirikata::Task::EventResponse::cancel();
+		return Input::EventResponse::cancel();
 	} else {
-		return Sirikata::Task::EventResponse::nop();
+		return Input::EventResponse::nop();
 	}
 }
 
-Sirikata::Task::EventResponse WebViewManager::onMouseDrag(Sirikata::Task::EventPtr evt)
+Input::EventResponse WebViewManager::onMouseDrag(Input::MouseDragEventPtr evt)
 {
-    MouseDragEventPtr e = std::tr1::dynamic_pointer_cast<MouseDragEvent>(evt);
-    if (!e) {
-        return Sirikata::Task::EventResponse::nop();
-    }
+    this->injectMouseMove(InputCoordToWebViewCoord(evt, evt->mX, evt->mY));
 
-    this->injectMouseMove(InputCoordToWebViewCoord(e, e->mX, e->mY));
-
-    int wvbutton = InputButtonToWebViewButton(e->mButton);
+    int wvbutton = InputButtonToWebViewButton(evt->mButton);
     if (wvbutton == UnknownMouseButton)
-        return Sirikata::Task::EventResponse::nop();
+        return Input::EventResponse::nop();
 
     bool success = true;
-    switch(e->mType) {
+    switch(evt->mType) {
       case Sirikata::Input::DRAG_DEADBAND:
       case Sirikata::Input::DRAG_START:
       case Sirikata::Input::DRAG_DRAG:
@@ -767,73 +749,63 @@ Sirikata::Task::EventResponse WebViewManager::onMouseDrag(Sirikata::Task::EventP
     }
 
     if (success)
-        return Sirikata::Task::EventResponse::cancel();
+        return Input::EventResponse::cancel();
     else
-        return Sirikata::Task::EventResponse::nop();
+        return Input::EventResponse::nop();
 }
 
-Sirikata::Task::EventResponse WebViewManager::onButton(Sirikata::Task::EventPtr evt)
+Input::EventResponse WebViewManager::onButton(Input::ButtonEventPtr evt)
 {
-    ButtonEventPtr e = std::tr1::dynamic_pointer_cast<ButtonEvent>(evt);
-	if (!e) {
-		return Sirikata::Task::EventResponse::nop();
-	}
-
 	bool success = true;
-	if(e->getDevice()->isKeyboard()) {
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS || SIRIKATA_PLATFORM == PLATFORM_LINUX
+	if(evt->getDevice()->isKeyboard()) {
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS || SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_LINUX
             // Work around a problem with Berkelium where cut/copy/paste don't
             // seem to get the same delay as other keyboard repeats. Instead,
             // just filter the repeats out for these keys
-            if ( e->pressed() && !e->activelyPressed() && e->mModifier == MOD_CTRL &&
-                (e->mButton == SDL_SCANCODE_X || e->mButton == SDL_SCANCODE_C || e->mButton == SDL_SCANCODE_V) )
+            if ( evt->pressed() && !evt->activelyPressed() && evt->mModifier == MOD_CTRL &&
+                (evt->mButton == SDL_SCANCODE_X || evt->mButton == SDL_SCANCODE_C || evt->mButton == SDL_SCANCODE_V) )
                 success = true; // Pretend we ate it
             else
-                success = this->injectKeyEvent(e->pressed(), (e->pressed() && !e->activelyPressed()), e->mModifier, e->mButton);
-#elif SIRIKATA_PLATFORM == PLATFORM_MAC
-	    if (e->mModifier == MOD_GUI && (e->pressed() && e->activelyPressed())) {
-	      if (e->mButton == SDL_SCANCODE_X)
+                success = this->injectKeyEvent(evt->pressed(), (evt->pressed() && !evt->activelyPressed()), evt->mModifier, evt->mButton);
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
+	    if (evt->mModifier == MOD_GUI && (evt->pressed() && evt->activelyPressed())) {
+	      if (evt->mButton == SDL_SCANCODE_X)
 		success = this->injectCut();
-	      else if (e->mButton == SDL_SCANCODE_C)
+	      else if (evt->mButton == SDL_SCANCODE_C)
 		success = this->injectCopy();
-	      else if (e->mButton == SDL_SCANCODE_V)
+	      else if (evt->mButton == SDL_SCANCODE_V)
 		success = this->injectPaste();
 	      else
-		success = this->injectKeyEvent(e->pressed(), (e->pressed() && !e->activelyPressed()), e->mModifier, e->mButton);
+		success = this->injectKeyEvent(evt->pressed(), (evt->pressed() && !evt->activelyPressed()), evt->mModifier, evt->mButton);
 	    }
 	    else {
-	      success = this->injectKeyEvent(e->pressed(), (e->pressed() && !e->activelyPressed()), e->mModifier, e->mButton);
+	      success = this->injectKeyEvent(evt->pressed(), (evt->pressed() && !evt->activelyPressed()), evt->mModifier, evt->mButton);
 	    }
 #endif
 	}
 
 	if (success) {
-		return Sirikata::Task::EventResponse::cancel();
+		return Input::EventResponse::cancel();
 	} else {
-		return Sirikata::Task::EventResponse::nop();
+		return Input::EventResponse::nop();
 	}
 }
 
-Sirikata::Task::EventResponse WebViewManager::onKeyTextInput(Sirikata::Task::EventPtr evt)
+Input::EventResponse WebViewManager::onKeyTextInput(Input::TextInputEventPtr evt)
 {
-    TextInputEventPtr e = std::tr1::dynamic_pointer_cast<TextInputEvent>(evt);
-	if (!e) {
-		return Sirikata::Task::EventResponse::nop();
-	}
-
         // We need to filter some characters that are getting in but cause
         // problems.
         String filtered_text;
-        for(int i = 0; i < (int)e->mText.size(); i++) {
-            int x = (int)e->mText[i];
-            if ((int)e->mText[i] != 127) // delete
-                filtered_text.push_back(e->mText[i]);
+        for(int i = 0; i < (int)evt->mText.size(); i++) {
+            int x = (int)evt->mText[i];
+            if ((int)evt->mText[i] != 127) // delete
+                filtered_text.push_back(evt->mText[i]);
         }
 
 	if (filtered_text.size() > 0 && injectTextEvent(filtered_text)) {
-		return Sirikata::Task::EventResponse::cancel();
+		return Input::EventResponse::cancel();
 	} else {
-		return Sirikata::Task::EventResponse::nop();
+		return Input::EventResponse::nop();
 	}
 }
 

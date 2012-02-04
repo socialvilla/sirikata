@@ -39,7 +39,6 @@ v8::Handle<v8::Value> invoke(const v8::Arguments& args)
   std::vector<boost::any> params;
   HandleScope scope;
 
-  //assert(args.Length() == 1);
   for(int i =0; i < args.Length(); i++)
       params.push_back(InvokableUtil::V8ToAny(caller, args[i]));
 
@@ -57,21 +56,22 @@ v8::Handle<v8::Value> invoke(const v8::Arguments& args)
 boost::any JSInvokableObjectInt::invoke(std::vector<boost::any> &params)
 {
   /* Invoke the invokable version */
-    SILOG(js,detailed,"JSInvokableObjectInt::invoke(): invokable_ type is " << typeid(invokable_).name());
+    SILOG(js,
+        insane,
+        "JSInvokableObjectInt::invoke(): invokable_ type is " <<\
+        typeid(invokable_).name());
+    
   return invokable_->invoke(params);
 }
 
 bool decodeJSInvokableObject(v8::Handle<v8::Value> senderVal, EmersonScript*& emerScript, JSInvokableObjectInt*& simObj)
 {
-
    if ((!senderVal->IsObject()) || (senderVal->IsUndefined()))
     {
         emerScript = NULL;
         simObj = NULL;
         return false;
     }
-
-
 
     v8::Handle<v8::Object>sender = v8::Handle<v8::Object>::Cast(senderVal);
 

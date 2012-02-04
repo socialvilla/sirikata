@@ -65,8 +65,21 @@
 #include "JSObjectStructs/JSUtilStruct.hpp"
 #include <boost/lexical_cast.hpp>
 #include "JSObjectStructs/JSCapabilitiesConsts.hpp"
-
+#include <boost/algorithm/string.hpp>
+#include <boost/algorithm/string/erase.hpp>
 #include <sirikata/core/util/Paths.hpp>
+
+#include <sys/stat.h>
+#include <sys/types.h>
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
+    typedef struct _stat stat_platform;
+#define fstat_platform _fstat
+#define fileno_platform _fileno
+#else
+    typedef struct stat stat_platform;
+#define fstat_platform fstat
+#define fileno_platform fileno
+#endif
 
 using namespace v8;
 using namespace std;
@@ -124,7 +137,8 @@ String exceptionAsString(v8::TryCatch& try_catch, EmersonLineMap* lineMap) {
  *  Javascript code on the stack. Therefore, we return the exception object in
  *  exc if the caller has provided a pointer for it.
  */
-v8::Handle<v8::Value> ProtectedJSCallbackFull(v8::Handle<v8::Context> ctx, v8::Handle<v8::Object> *target, v8::Handle<v8::Function> cb, int argc, v8::Handle<v8::Value> argv[], String* exc = NULL) {
+v8::Handle<v8::Value> ProtectedJSCallbackFull(v8::Handle<v8::Context> ctx, v8::Handle<v8::Object> *target, v8::Handle<v8::Function> cb, int argc, v8::Handle<v8::Value> argv[], String* exc = NULL)
+{
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(ctx);
 
@@ -147,8 +161,6 @@ v8::Handle<v8::Value> ProtectedJSCallbackFull(v8::Handle<v8::Context> ctx, v8::H
     }
     return result;
 }
-
-
 
 
 v8::Handle<v8::Value> ProtectedJSCallbackFull(v8::Handle<v8::Context> ctx, v8::Handle<v8::Object> *target, v8::Handle<v8::Function> cb, String* exc = NULL) {
@@ -196,8 +208,14 @@ boost::filesystem::path JSObjectScript::EvalContext::getFullRelativeScriptDir() 
     path result;
     // Scan through all matching parts
     path::const_iterator script_it, base_it;
-    for(script_it = currentScriptDir.begin(), base_it = currentScriptBaseDir.begin(); base_it != currentScriptBaseDir.end(); script_it++, base_it++) {
-        assert(*script_it == *base_it);
+    for(script_it = currentScriptDir.begin(), base_it = currentScriptBaseDir.begin(); base_it != currentScriptBaseDir.end(); script_it++, base_it++)
+    {
+        if (*script_it != *base_it)
+        {
+            JSLOG(error,"Mismatched script and base iterators.  " <<\
+                "script: "<<*script_it<<"   base: "<<*base_it);
+            assert(false);
+        }
     }
     // Get any leftover script parts
     while(script_it != currentScriptDir.end()) {
@@ -223,6 +241,9 @@ JSObjectScript::ScopedEvalContext::~ScopedEvalContext() {
 
 void JSObjectScript::initialize(const String& args, const String& script,int32 maxResThresh)
 {
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
+
+    JSSCRIPT_SERIAL_CHECK();
     maxResourceThresh =maxResThresh;
 
     InitializeClassOptions(
@@ -239,7 +260,10 @@ void JSObjectScript::initialize(const String& args, const String& script,int32 m
     v8::HandleScope handle_scope;
 
     SpaceObjectReference sporef = SpaceObjectReference::null();
-    mContext = new JSContextStruct(this, NULL,sporef, Capabilities::getFullCapabilities(),mManager->mContextGlobalTemplate,contIDTracker,NULL);
+    mContext =
+        new JSContextStruct(
+            this, NULL,sporef, Capabilities::getFullCapabilities(),
+            mManager->mContextGlobalTemplate,contIDTracker,NULL,mCtx);
 
     // By default, our eval context has:
     // 1. Empty currentScriptDir, indicating it should only use explicitly
@@ -258,7 +282,7 @@ void JSObjectScript::initialize(const String& args, const String& script,int32 m
         EvalContext new_ctx(ctx,mContext);
         v8::ScriptOrigin origin(v8::String::New("(original_import)"));
 
-        v8::Handle<v8::Value> result = protectedEval(script, &origin, new_ctx, mContext, true);
+        v8::Handle<v8::Value> result = protectedEval(script, &origin, new_ctx, true);
         if (!result.IsEmpty()) {
             v8::String::Utf8Value exception(result);
             String exception_string = FromV8String(exception);
@@ -269,8 +293,12 @@ void JSObjectScript::initialize(const String& args, const String& script,int32 m
 }
 
 
-JSObjectScript::JSObjectScript(JSObjectScriptManager* jMan, OH::Storage* storage, OH::PersistedObjectSet* persisted_set, const UUID& internal_id)
- : mInternalID(internal_id),
+JSObjectScript::JSObjectScript(
+    JSObjectScriptManager* jMan, OH::Storage* storage,
+    OH::PersistedObjectSet* persisted_set, const UUID& internal_id,
+    JSCtx* ctx)
+ : mCtx (ctx),
+   mInternalID(internal_id),
    mResourceCounter(0),
    mNestedEvalCounter(0),
    contIDTracker(0),
@@ -282,22 +310,66 @@ JSObjectScript::JSObjectScript(JSObjectScriptManager* jMan, OH::Storage* storage
 }
 
 
+
 void JSObjectScript::start() {
 }
 
-void JSObjectScript::stop() {
+
+void JSObjectScript::stop()
+{
+    mCtx->objStrand->post(
+        std::tr1::bind(&JSObjectScript::iStop,this,true));
+}
+
+void JSObjectScript::iStop(bool letDie)
+{
+    // If we're really a subclass, i.e. an EmersonScript, we'll have already
+    // called letDie().
+    if (letDie)
+    {
+        if (Liveness::livenessAlive())
+            Liveness::letDie();
+    }
+
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
+
+    JSSCRIPT_SERIAL_CHECK();
+
+    mCtx->stop();
+
     stopCalled = true;
     // This clear has to happen before ~JSObjectScript because it can call
     // virtual functions which need to be dispatched to subclasses
     // (i.e. EmersonScript).
     if (mContext != NULL)
     {
+        JSContextStruct* toDel = mContext;
         v8::HandleScope handle_scope;
         mContext->clear();
-        delete mContext;
         mContext = NULL;
+
+        mCtx->objStrand->post(
+            std::tr1::bind(&JSObjectScript::iDelContext,this,toDel,toDel->livenessToken()));
+
     }
 }
+
+
+void JSObjectScript::iDelContext(JSContextStruct* toDel,Liveness::Token ctxLT)
+{
+    if (ctxLT)
+    {
+        if (!toDel->getIsCleared())
+        {
+            JSLOG(error,"Context should already be cleared "\
+                "before calling internal delete on it");
+            assert(false);
+        }
+        delete toDel;
+    }
+}
+
+
 
 bool JSObjectScript::isStopped()
 {
@@ -307,6 +379,7 @@ bool JSObjectScript::isStopped()
 
 void JSObjectScript::shimImportAndEvalScript(JSContextStruct* jscont, const String& toEval)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
         mEvalContextStack.push(EvalContext(jscont));
     else
@@ -319,33 +392,142 @@ void JSObjectScript::shimImportAndEvalScript(JSContextStruct* jscont, const Stri
     mEvalContextStack.pop();
 }
 
-
-v8::Handle<v8::Value> JSObjectScript::storageBeginTransaction(JSContextStruct* jscont) {
+/**
+   FIXME: instead of posting jscont through, instead post its id through.  That
+   way, it can't get deleted out from under us.
+ */
+v8::Handle<v8::Value> JSObjectScript::storageBeginTransaction(JSContextStruct* jscont)
+{
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
-    mStorage->beginTransaction(mInternalID);
+
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageBeginTransaction,this,
+            jscont,Liveness::livenessToken(),jscont->livenessToken()));
+
     return v8::Undefined();
 }
+
+
+void JSObjectScript::eStorageBeginTransaction(
+    JSContextStruct* jscont,Liveness::Token objAlive,
+    Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+    mStorage->beginTransaction(mInternalID);
+}
+
+
 
 v8::Handle<v8::Value> JSObjectScript::storageCommit(JSContextStruct* jscont, v8::Handle<v8::Function> cb)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
-    OH::Storage::CommitCallback wrapped_cb = 0;
-    if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCommitCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
-    }
-    mStorage->commitTransaction(mInternalID, wrapped_cb);
+
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageCommit,this,
+            jscont,v8::Persistent<v8::Function>::New(cb),
+            Liveness::livenessToken(),jscont->livenessToken()));
+
     return v8::Undefined();
 }
 
 
-void JSObjectScript::storageCommitCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success, OH::Storage::ReadSet* rs) {
+void JSObjectScript::eStorageCommit(
+    JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+    Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (! objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (! ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
+    OH::Storage::CommitCallback wrapped_cb = 0;
+    if (!cb.IsEmpty())
+    {
+        wrapped_cb =std::tr1::bind(
+            &JSObjectScript::storageCommitCallback, this,
+            jscont, cb, _1, _2,Liveness::livenessToken(),
+            jscont->livenessToken());
+    }
+    mStorage->commitTransaction(mInternalID, wrapped_cb);
+}
+
+
+
+/**
+   lkjs; FIXME
+
+   ERROR: Should not rely on the being around of jscont.  Should
+   pass id through instead, and look it up.;
+ */
+void JSObjectScript::storageCommitCallback(
+    JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+    bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+    Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
     if (isStopped()) {
         JSLOG(warn, "Ignoring storage commit callback after shutdown request.");
         return;
     }
 
+    mCtx->objStrand->post(
+        std::tr1::bind(&JSObjectScript::iStorageCommitCallback,this,
+            jscont,cb,success,rs,Liveness::livenessToken(),jscont->livenessToken()));
+}
+
+void JSObjectScript::iStorageCommitCallback(
+    JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+    bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+    Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
+
+    JSSCRIPT_SERIAL_CHECK();
+    if (mCtx->stopped())
+    {
+        JSLOG(warn, "Ignoring storage commit callback after shutdown request.");
+        return;
+    }
+
+
+    while (! mCtx->initialized())
+    {}
+
+
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
+
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext->mContext);
+
     TryCatch try_catch;
 
     v8::Handle<v8::Boolean> js_success = v8::Boolean::New(success);
@@ -365,11 +547,59 @@ void JSObjectScript::storageCommitCallback(JSContextStruct* jscont, v8::Persiste
     postCallbackChecks();
 }
 
-void JSObjectScript::storageCountCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success, int32 count) {
+
+void JSObjectScript::storageCountCallback(
+    JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+    bool success, int32 count,Liveness::Token objAlive,
+    Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
     if (isStopped()) {
         JSLOG(warn, "Ignoring storage commit callback after shutdown request.");
         return;
     }
+
+    mCtx->objStrand->post(
+        std::tr1::bind(&JSObjectScript::iStorageCountCallback,this,
+            jscont,cb,success,count,Liveness::livenessToken(),
+            jscont->livenessToken()));
+}
+
+
+void JSObjectScript::iStorageCountCallback(
+    JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
+    bool success, int32 count,Liveness::Token objAlive,
+    Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
+
+    JSSCRIPT_SERIAL_CHECK();
+    if (mCtx->stopped())
+    {
+        JSLOG(warn, "Ignoring storage commit callback after shutdown request.");
+        return;
+    }
+
+    while (!mCtx->initialized())
+    {}
+
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
 
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext->mContext);
@@ -385,86 +615,269 @@ void JSObjectScript::storageCountCallback(JSContextStruct* jscont, v8::Persisten
 }
 
 
-v8::Handle<v8::Value> JSObjectScript::storageErase(const OH::Storage::Key& key, v8::Handle<v8::Function> cb, JSContextStruct* jscont)
+v8::Handle<v8::Value> JSObjectScript::storageErase(
+    const OH::Storage::Key& key, v8::Handle<v8::Function> cb,
+    JSContextStruct* jscont)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
+
+
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageErase,this,
+            key,v8::Persistent<v8::Function>::New(cb),jscont,
+            Liveness::livenessToken(),jscont->livenessToken()));
+
+    return v8::Boolean::New(true);
+}
+
+
+void JSObjectScript::eStorageErase(
+    const OH::Storage::Key& key, v8::Persistent<v8::Function> cb,
+    JSContextStruct* jscont,Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
 
     OH::Storage::CommitCallback wrapped_cb = 0;
     if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCommitCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
+
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::storageCommitCallback, this,
+                jscont, cb, _1, _2,Liveness::livenessToken(),jscont->livenessToken());
     }
 
     bool returner = mStorage->erase(mInternalID, key, wrapped_cb);
-    return v8::Boolean::New(returner);
+    return;
 }
 
-v8::Handle<v8::Value> JSObjectScript::storageWrite(const OH::Storage::Key& key, const String& toWrite, v8::Handle<v8::Function> cb, JSContextStruct* jscont)
+
+v8::Handle<v8::Value> JSObjectScript::storageWrite(
+    const OH::Storage::Key& key, const String& toWrite,
+    v8::Handle<v8::Function> cb, JSContextStruct* jscont)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
 
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageWrite,this,
+            key,toWrite,v8::Persistent<v8::Function>::New(cb),jscont,
+            Liveness::livenessToken(),jscont->livenessToken()));
+
+    return v8::Boolean::New(true);
+}
+
+void JSObjectScript::eStorageWrite(
+    const OH::Storage::Key& key, const String& toWrite,
+    v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+    Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
     OH::Storage::CommitCallback wrapped_cb = 0;
-    if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCommitCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
+    if (!cb.IsEmpty())
+    {
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::storageCommitCallback, this,
+                jscont, cb, _1, _2,Liveness::livenessToken(),jscont->livenessToken());
     }
 
     bool returner = mStorage->write(mInternalID, key, toWrite, wrapped_cb);
-    return v8::Boolean::New(returner);
 }
 
-v8::Handle<v8::Value> JSObjectScript::storageRead(const OH::Storage::Key& key, v8::Handle<v8::Function> cb, JSContextStruct* jscont)
+
+
+v8::Handle<v8::Value> JSObjectScript::storageRead(
+    const OH::Storage::Key& key, v8::Handle<v8::Function> cb,
+    JSContextStruct* jscont)
 {
-    if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
+    JSSCRIPT_SERIAL_CHECK();
+    if (mStorage == NULL)
+        return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
+
+
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageRead,this,
+            key,v8::Persistent<v8::Function>::New(cb),jscont,
+            Liveness::livenessToken(),jscont->livenessToken()));
+
+    return v8::Boolean::New(true);
+}
+
+
+void JSObjectScript::eStorageRead(
+    const OH::Storage::Key& key, v8::Persistent<v8::Function> cb,
+    JSContextStruct* jscont,Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
 
     OH::Storage::CommitCallback wrapped_cb = 0;
     if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCommitCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::storageCommitCallback, this,
+                jscont, cb, _1, _2,Liveness::livenessToken(),
+                jscont->livenessToken());
     }
 
     bool read_queue_success = mStorage->read(mInternalID, key, wrapped_cb);
-    return v8::Boolean::New(read_queue_success);
 }
 
-v8::Handle<v8::Value> JSObjectScript::storageRangeRead(const OH::Storage::Key& start, const OH::Storage::Key& finish, v8::Handle<v8::Function> cb, JSContextStruct* jscont)
+
+
+v8::Handle<v8::Value> JSObjectScript::storageRangeRead(
+    const OH::Storage::Key& start, const OH::Storage::Key& finish,
+    v8::Handle<v8::Function> cb, JSContextStruct* jscont)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
 
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageRangeRead,this,
+            start,finish,v8::Persistent<v8::Function>::New(cb),jscont,
+            Liveness::livenessToken(),jscont->livenessToken()));
+
+    return v8::Boolean::New(true);
+}
+
+void JSObjectScript::eStorageRangeRead(
+    const OH::Storage::Key& start, const OH::Storage::Key& finish,
+    v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+    Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
     OH::Storage::CommitCallback wrapped_cb = 0;
-    if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCommitCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
+    if (!cb.IsEmpty())
+    {
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::storageCommitCallback, this,
+                jscont,cb, _1, _2,livenessToken(),
+                jscont->livenessToken());
     }
 
-    bool returner = mStorage->rangeRead(mInternalID, start, finish, wrapped_cb);
-    return v8::Boolean::New(returner);
+    bool returner =
+        mStorage->rangeRead(mInternalID, start, finish, wrapped_cb);
 }
 
-v8::Handle<v8::Value> JSObjectScript::storageRangeErase(const OH::Storage::Key& start, const OH::Storage::Key& finish, v8::Handle<v8::Function> cb, JSContextStruct* jscont)
+
+v8::Handle<v8::Value> JSObjectScript::storageRangeErase(
+    const OH::Storage::Key& start, const OH::Storage::Key& finish,
+    v8::Handle<v8::Function> cb, JSContextStruct* jscont)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
 
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageRangeErase,this,
+            start,finish,v8::Persistent<v8::Function>::New(cb),jscont,
+            Liveness::livenessToken(),jscont->livenessToken()));
+
+    return v8::Boolean::New(true);
+}
+
+void JSObjectScript::eStorageRangeErase(
+    const OH::Storage::Key& start, const OH::Storage::Key& finish,
+    v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+    Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
     OH::Storage::CommitCallback wrapped_cb = 0;
-    if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCommitCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
+    if (!cb.IsEmpty())
+    {
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::storageCommitCallback, this,
+                jscont,cb, _1, _2,Liveness::livenessToken(),
+                jscont->livenessToken());
     }
 
     bool returner = mStorage->rangeErase(mInternalID, start, finish, wrapped_cb);
-    return v8::Boolean::New(returner);
 }
 
-v8::Handle<v8::Value> JSObjectScript::storageCount(const OH::Storage::Key& start, const OH::Storage::Key& finish, v8::Handle<v8::Function> cb, JSContextStruct* jscont)
+
+v8::Handle<v8::Value> JSObjectScript::storageCount(
+    const OH::Storage::Key& start, const OH::Storage::Key& finish,
+    v8::Handle<v8::Function> cb, JSContextStruct* jscont)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mStorage == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
 
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eStorageCount,this,
+            start,finish,v8::Persistent<v8::Function>::New(cb),jscont,
+            Liveness::livenessToken(),jscont->livenessToken()));
+
+    return v8::Boolean::New(true);
+}
+
+
+void JSObjectScript::eStorageCount(
+    const OH::Storage::Key& start, const OH::Storage::Key& finish,
+    v8::Persistent<v8::Function> cb, JSContextStruct* jscont,
+    Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
     OH::Storage::CountCallback wrapped_cb = 0;
-    if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::storageCountCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1, _2);
+    if (!cb.IsEmpty())
+    {
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::storageCountCallback, this,
+                jscont, cb, _1, _2,livenessToken(),jscont->livenessToken());
     }
 
     bool returner = mStorage->count(mInternalID, start, finish, wrapped_cb);
-    return v8::Boolean::New(returner);
 }
 
+void JSObjectScript::setRestoreScriptCallback(
+    JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success,
+    Liveness::Token objAlive,Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
 
-void JSObjectScript::setRestoreScriptCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success) {
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
+    JSSCRIPT_SERIAL_CHECK();
     if (isStopped()) {
         JSLOG(warn, "Ignoring restore script callback after shutdown request.");
         return;
@@ -483,20 +896,94 @@ void JSObjectScript::setRestoreScriptCallback(JSContextStruct* jscont, v8::Persi
 }
 
 
+v8::Handle<v8::Value> JSObjectScript::pushEvalContextScopeDirectory(
+    const String& newDir)
+{
+    JSSCRIPT_SERIAL_CHECK();
+    if (mEvalContextStack.empty())
+    {
+        V8_EXCEPTION_CSTR(
+            "Error when pushing context scope.  Have no surrounding scope.");
+    }
+
+    boost::filesystem::path baseDir  =
+        Path::SubstitutePlaceholders(Path::Placeholders::RESOURCE(JS_PLUGINS_DIR,JS_SCRIPTS_DIR));
+
+    String newerDir(newDir);
+    boost::erase_all(newerDir,"..");
+    boost::filesystem::path fullPath =
+        baseDir / newerDir;
+
+    JSLOG(detailed,"Pushing new path "<<fullPath<<" onto scope stack.");
+    
+    EvalContext ec(mEvalContextStack.top());
+    ec.currentScriptDir = fullPath;
+
+    mEvalContextStack.push(ec);
+    return v8::Undefined();
+}
+
+v8::Handle<v8::Value> JSObjectScript::popEvalContextScopeDirectory()
+{
+    JSSCRIPT_SERIAL_CHECK();
+    if (mEvalContextStack.empty())
+    {
+        V8_EXCEPTION_CSTR(
+            "Error when popping context scope.  Have no surrounding scope.");
+    }
+
+    JSLOG(detailed,
+        "Popping new path "<<mEvalContextStack.top().currentScriptDir<< \
+        " from scope stack.");
+    
+    mEvalContextStack.pop();
+    return v8::Undefined();
+}
+    
+
 
 //can instantly finish the clear operation in JSObjectScript because not in the
 //midst of handling any events that might invalidate iterators.
 void JSObjectScript::registerContextForClear(JSContextStruct* jscont)
 {
+    JSSCRIPT_SERIAL_CHECK();
     jscont->finishClear();
 }
 
-v8::Handle<v8::Value> JSObjectScript::setRestoreScript(JSContextStruct* jscont, const String& script, v8::Handle<v8::Function> cb) {
+v8::Handle<v8::Value> JSObjectScript::setRestoreScript(
+    JSContextStruct* jscont, const String& script, v8::Handle<v8::Function> cb)
+{
+    JSSCRIPT_SERIAL_CHECK();
     if (mPersistedObjectSet == NULL) return v8::ThrowException( v8::Exception::Error(v8::String::New("No persistent storage available.")) );
 
+    mCtx->mainStrand->post(
+        std::tr1::bind(&JSObjectScript::eSetRestoreScript,this,
+            jscont,script,v8::Persistent<v8::Function>::New(cb),
+            Liveness::livenessToken(),jscont->livenessToken()));
+    return v8::Undefined();
+}
+
+
+void JSObjectScript::eSetRestoreScript(
+    JSContextStruct* jscont, const String& script,
+    v8::Persistent<v8::Function> cb, Liveness::Token objAlive,
+    Liveness::Token ctxAlive)
+{
+    if (!objAlive) return;
+    Liveness::Lock locked(objAlive);
+    if (!locked) return;
+
+    if (!ctxAlive) return;
+    Liveness::Lock lockedCtx(ctxAlive);
+    if (!lockedCtx) return;
+
+
     OH::PersistedObjectSet::RequestCallback wrapped_cb = 0;
-    if (!cb.IsEmpty()) {
-        wrapped_cb = std::tr1::bind(&JSObjectScript::setRestoreScriptCallback, this, jscont, v8::Persistent<v8::Function>::New(cb), _1);
+    if (!cb.IsEmpty())
+    {
+        wrapped_cb =
+            std::tr1::bind(&JSObjectScript::setRestoreScriptCallback, this,
+                jscont, cb, _1,Liveness::livenessToken(),jscont->livenessToken());
     }
 
     // FIXME we should really tack on any additional parameters we
@@ -508,12 +995,24 @@ v8::Handle<v8::Value> JSObjectScript::setRestoreScript(JSContextStruct* jscont, 
 
     // FIXME script_args
     mPersistedObjectSet->requestPersistedObject(mInternalID, script_type, "", script, wrapped_cb);
-    return v8::Undefined();
 }
 
-v8::Handle<v8::Value> JSObjectScript::debug_fileRead(const String& filename)
+v8::Handle<v8::Value> JSObjectScript::debug_fileRead(String& filename)
 {
-    std::ifstream fRead(filename.c_str(), std::ios::binary | std::ios::in);
+    JSSCRIPT_SERIAL_CHECK();
+    boost::filesystem::path baseDir  =
+        Path::SubstitutePlaceholders(Path::Placeholders::RESOURCE(JS_PLUGINS_DIR,JS_SCRIPTS_DIR));
+
+    boost::erase_all(filename,"..");
+    boost::filesystem::path fullPath =
+        baseDir / filename;
+
+    if (!boost::filesystem::is_regular_file(fullPath))
+        V8_EXCEPTION_CSTR("No such file to read from");
+
+    
+    std::ifstream fRead(fullPath.string().c_str(),
+        std::ios::binary | std::ios::in);
     std::ifstream::pos_type begin, end;
 
     begin = fRead.tellg();
@@ -533,9 +1032,47 @@ v8::Handle<v8::Value> JSObjectScript::debug_fileRead(const String& filename)
 }
 
 
-v8::Handle<v8::Value> JSObjectScript::debug_fileWrite(const String& strToWrite,const String& filename)
+v8::Handle<v8::Value> JSObjectScript::debug_fileWrite(String& strToWrite,String& filename)
 {
-    std::ofstream fWriter (filename.c_str(),  std::ios::out | std::ios::binary);
+    JSSCRIPT_SERIAL_CHECK();
+    
+    boost::filesystem::path baseDir  =
+        Path::SubstitutePlaceholders(Path::Placeholders::RESOURCE(JS_PLUGINS_DIR,JS_SCRIPTS_DIR));
+
+    boost::erase_all(filename,"..");
+    boost::filesystem::path fullPath =
+        baseDir / filename;
+
+    
+    String splitval;
+// We need to use filesystem2 on Windows because boost 1.44 doesn't expose slash through the boost::filesystem namespace.
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
+    splitval += boost::filesystem2::slash<boost::filesystem::path>::value;
+#else
+    splitval += boost::filesystem::slash<boost::filesystem::path>::value;
+#endif
+    std::vector<String> pathParts;
+    boost::algorithm::split(
+        pathParts,fullPath.string(),
+        boost::is_any_of(splitval.c_str()));
+
+    boost::filesystem::path partialPath("/");
+    for (uint64 s= 0; s < pathParts.size() -1; ++s)
+    {
+        partialPath = partialPath / pathParts[s];
+
+        if (boost::filesystem::is_regular_file(partialPath))
+            V8_EXCEPTION_CSTR("Error writing file already have file with directory name");
+            
+        if ((!boost::filesystem::is_directory(partialPath)) &&
+            (!boost::filesystem::is_regular_file(partialPath)))
+        {
+            boost::filesystem::create_directory(partialPath);
+        }
+    }
+
+    std::ofstream fWriter (fullPath.string().c_str(),
+        std::ios::out | std::ios::binary);
 
     for (String::size_type s = 0; s < strToWrite.size(); ++s)
     {
@@ -552,6 +1089,7 @@ v8::Handle<v8::Value> JSObjectScript::debug_fileWrite(const String& strToWrite,c
 
 void JSObjectScript::printExceptionToScript(const String& exc)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
     {
         JSLOG(error, "Error when printing exception.  Eval context stack improperly maintained.  Aborting.");
@@ -572,12 +1110,19 @@ void JSObjectScript::printExceptionToScript(const String& exc)
     postEvalOps();
 }
 
-
-v8::Handle<v8::Value> JSObjectScript::invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Function>& cb, int argc, v8::Handle<v8::Value> argv[]) {
+v8::Handle<v8::Value> JSObjectScript::invokeCallback(
+    JSContextStruct* ctx, v8::Handle<v8::Function>& cb,
+    int argc, v8::Handle<v8::Value> argv[])
+{
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
+    JSSCRIPT_SERIAL_CHECK();
     return invokeCallback(ctx, NULL, cb, argc, argv);
 }
 
-v8::Handle<v8::Value> JSObjectScript::invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Function>& cb) {
+v8::Handle<v8::Value> JSObjectScript::invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Function>& cb)
+{
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
+    JSSCRIPT_SERIAL_CHECK();
     return invokeCallback(ctx, NULL, cb, 0, NULL);
 }
 
@@ -591,6 +1136,9 @@ bool JSObjectScript::isRootContext(JSContextStruct* jscont)
 
 JSObjectScript::~JSObjectScript()
 {
+    if (Liveness::livenessAlive())
+        Liveness::letDie();
+    delete mCtx;
 }
 
 
@@ -624,6 +1172,7 @@ void handleEmersonRecognitionError(struct ANTLR3_BASE_RECOGNIZER_struct* recogni
 
 v8::Handle<v8::Value> JSObjectScript::emersonCompileString(const String& toCompile)
 {
+    JSSCRIPT_SERIAL_CHECK();
     HandleScope handle_scope;
     String em_script_str = toCompile;
     EmersonLineMap lineMap;
@@ -660,6 +1209,7 @@ v8::Handle<v8::Value> JSObjectScript::emersonCompileString(const String& toCompi
 
 v8::Handle<v8::Context> JSObjectScript::getCurrentV8Context()
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
     {
         JSLOG(error, "Error: context stack is empty.  Returning context associated with root instead.");
@@ -671,8 +1221,9 @@ v8::Handle<v8::Context> JSObjectScript::getCurrentV8Context()
 
 
 
-v8::Handle<v8::Value> JSObjectScript::internalEval(const String& em_script_str, v8::ScriptOrigin* em_script_name, bool is_emerson, bool return_exc)
+v8::Handle<v8::Value> JSObjectScript::internalEval(const String& em_script_str, v8::ScriptOrigin* em_script_name, bool is_emerson, bool return_exc, const String& cache_path)
 {
+    JSSCRIPT_SERIAL_CHECK();
     v8::HandleScope handle_scope;
     //reads context value from the top of the context stack.
     v8::Context::Scope context_scope(getCurrentV8Context());
@@ -720,6 +1271,32 @@ v8::Handle<v8::Value> JSObjectScript::internalEval(const String& em_script_str, 
             {
                 JSLOG(insane, " Compiled JS script = \n" <<js_script_str);
                 source = v8::String::New(js_script_str.c_str());
+
+                // Save the compiled file as a cache
+                if (!cache_path.empty()) {
+                    // This needs to be atomic -- dump in a temp file and then
+                    // rename it.
+                    String temp_cache_path = Path::Get(Path::DIR_TEMP, Path::GetTempFilename("emerson-js-cache"));
+                    {
+                        std::stringstream js_script_stream(js_script_str);
+                        std::ofstream temp_cache_file(temp_cache_path.c_str());
+                        boost::iostreams::copy(js_script_stream, temp_cache_file);
+                    }
+                    // Make sure we have the directories
+                    boost::filesystem::create_directories( boost::filesystem::path(cache_path).parent_path() );
+                    // And finally try to rename. We wrap this in
+                    // try/catch because either one could throw an
+                    // exception (permissions errors, someone else got
+                    // a file in there between our remove and rename,
+                    // etc).
+                    try {
+                        boost::filesystem::remove(cache_path);
+                        boost::filesystem::rename(temp_cache_path, cache_path);
+                    } catch (boost::filesystem::filesystem_error) {
+                        // Just give up, somebody else has cached it
+                        // or we're just not going to be able to.
+                    }
+                }
             }
             else
             {
@@ -798,10 +1375,11 @@ v8::Handle<v8::Value> JSObjectScript::internalEval(const String& em_script_str, 
 
 
 
-v8::Handle<v8::Value> JSObjectScript::protectedEval(const String& em_script_str, v8::ScriptOrigin* em_script_name, const EvalContext& new_ctx, bool return_exc, bool isJS)
+v8::Handle<v8::Value> JSObjectScript::protectedEval(const String& em_script_str, v8::ScriptOrigin* em_script_name, const EvalContext& new_ctx, bool return_exc, const String& cache_path, bool isJS)
 {
+    JSSCRIPT_SERIAL_CHECK();
     ScopedEvalContext sec(this, new_ctx);
-    return internalEval(em_script_str, em_script_name, !isJS, return_exc);
+    return internalEval(em_script_str, em_script_name, !isJS, return_exc, cache_path);
 }
 
 
@@ -815,6 +1393,7 @@ v8::Handle<v8::Value> JSObjectScript::protectedEval(const String& em_script_str,
  */
 v8::Handle<v8::Value> JSObjectScript::compileFunctionInContext(v8::Handle<v8::Function>&cb)
 {
+    JSSCRIPT_SERIAL_CHECK();
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(getCurrentV8Context());
 
@@ -859,18 +1438,21 @@ v8::Handle<v8::Value> JSObjectScript::compileFunctionInContext(v8::Handle<v8::Fu
 //returns true if haven't surpassed resource threshold
 bool JSObjectScript::checkResourcesCPP()
 {
+    JSSCRIPT_SERIAL_CHECK();
     ++mResourceCounter;
     return (mResourceCounter < maxResourceThresh);
 }
 
 v8::Handle<v8::Value> JSObjectScript::checkResources()
 {
+    JSSCRIPT_SERIAL_CHECK();
     return v8::Boolean::New(checkResourcesCPP());
 }
 
 
 void JSObjectScript::preEvalOps()
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mNestedEvalCounter < 0)
         JSLOG(error, "Error in preEvalOps.  Should never indicate that we have executed negative evals");
 
@@ -882,12 +1464,17 @@ void JSObjectScript::preEvalOps()
 
 void JSObjectScript::postEvalOps()
 {
+    JSSCRIPT_SERIAL_CHECK();
     --mNestedEvalCounter;
 }
 
 
-v8::Handle<v8::Value> JSObjectScript::invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Object>* target, v8::Handle<v8::Function>& cb, int argc, v8::Handle<v8::Value> argv[])
+v8::Handle<v8::Value> JSObjectScript::invokeCallback(
+    JSContextStruct* ctx, v8::Handle<v8::Object>* target,
+    v8::Handle<v8::Function>& cb, int argc, v8::Handle<v8::Value> argv[])
 {
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
         mEvalContextStack.push(EvalContext(ctx));
     else
@@ -912,9 +1499,9 @@ v8::Handle<v8::Value> JSObjectScript::invokeCallback(JSContextStruct* ctx, v8::H
 
 bool JSObjectScript::checkCurCtxtHasCapability(JSPresenceStruct* jspres, Capabilities::Caps whatCap)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
         return false;
-
 
     //only way that this context won't have capability is if jspres is context's
     //associated presence.  If it is, check that context has capability.
@@ -935,6 +1522,7 @@ bool JSObjectScript::checkCurCtxtHasCapability(JSPresenceStruct* jspres, Capabil
  */
 v8::Handle<v8::Value>JSObjectScript::executeInSandbox(JSContextStruct* jscont, v8::Handle<v8::Function> funcToCall,int argc, v8::Handle<v8::Value>* argv)
 {
+    JSSCRIPT_SERIAL_CHECK();
     ScopedEvalContext scopedContext(this,EvalContext(jscont));
 
     JSLOG(insane, "executing script in alternate context");
@@ -954,6 +1542,7 @@ v8::Handle<v8::Value>JSObjectScript::executeInSandbox(JSContextStruct* jscont, v
 
 
 void JSObjectScript::print(const String& str) {
+    JSSCRIPT_SERIAL_CHECK();
     assert(!mEvalContextStack.empty());
     std::ostream* os = mEvalContextStack.top().currentOutputStream;
     assert(os != NULL);
@@ -963,12 +1552,12 @@ void JSObjectScript::print(const String& str) {
 
 
 
-
 //takes in a name of a file to read from and execute all instructions within.
 //also takes in a context to do so in.  If this context is null, just use
 //mContext instead.
 void JSObjectScript::resolveImport(const String& filename, boost::filesystem::path* full_file_out, boost::filesystem::path* base_path_out)
 {
+    JSSCRIPT_SERIAL_CHECK();
     using namespace boost::filesystem;
 
     // Search through the import paths to find the file to import, searching the
@@ -976,10 +1565,16 @@ void JSObjectScript::resolveImport(const String& filename, boost::filesystem::pa
     path filename_as_path(filename);
     assert(!mEvalContextStack.empty());
     EvalContext& ctx = mEvalContextStack.top();
-    if (!ctx.currentScriptDir.empty()) {
-        path fq = ctx.currentScriptDir / filename_as_path;
-        try {
-            if (boost::filesystem::exists(fq)) {
+    if (!ctx.currentScriptDir.empty())
+    {
+
+        path fq =  ctx.currentScriptDir / filename_as_path;
+        JSLOG(detailed,"Attempting to resolve import for "<<fq);
+
+        try
+        {
+            if (boost::filesystem::exists(fq))
+            {
                 *full_file_out = fq;
                 *base_path_out = ctx.currentScriptBaseDir;
                 return;
@@ -990,20 +1585,26 @@ void JSObjectScript::resolveImport(const String& filename, boost::filesystem::pa
         }
     }
 
-    std::list<String> search_paths = mManager->getOptions()->referenceOption("import-paths")->as< std::list<String> >();
+    std::list<String> default_search_paths = mManager->getOptions()->referenceOption("default-import-paths")->as< std::list<String> >();
+    std::list<String> additional_search_paths = mManager->getOptions()->referenceOption("import-paths")->as< std::list<String> >();
+    std::list<String> search_paths;
+    search_paths.splice(search_paths.end(), default_search_paths);
+    search_paths.splice(search_paths.end(), additional_search_paths);
+
     // Replace special tags with their values
-    for(std::list<String>::iterator search_it = search_paths.begin(); search_it != search_paths.end(); search_it++) {
-        // Binary directory
-        static const String bindir_pattern("<bindir>");
-        std::size_t bindir_pos = search_it->find(bindir_pattern);
-        if (bindir_pos != String::npos)
-            search_it->replace(bindir_pos, bindir_pattern.size(), Path::Get(Path::DIR_EXE_BUNDLE));
+    for(std::list<String>::iterator search_it = search_paths.begin();
+        search_it != search_paths.end(); search_it++)
+    {
+        *search_it = Path::SubstitutePlaceholders(*search_it);
     }
-    // Always search the current directory as a last resort
-    search_paths.push_back(".");
-    for (std::list<String>::iterator pit = search_paths.begin(); pit != search_paths.end(); pit++) {
+
+
+    for (std::list<String>::iterator pit = search_paths.begin();
+         pit != search_paths.end(); pit++)
+    {
         path base_path(*pit);
         path fq = base_path / filename_as_path;
+
         try {
             if (boost::filesystem::exists(fq)) {
                 *full_file_out = fq;
@@ -1023,8 +1624,41 @@ void JSObjectScript::resolveImport(const String& filename, boost::filesystem::pa
 }
 
 
+namespace {
+// Tries to read the file's contents and place them in contents_out. Returns
+// false if it was unable to read the file. Also get
+bool read_file_contents(const std::string& full_filename, std::string& contents_out, int64* mtime) {
+    FILE * pFile;
+    long lSize;
+    char * buffer;
+    long result;
+
+    pFile = fopen (full_filename.c_str(), "rb" );
+    if (pFile == NULL)
+        return false;
+
+    fseek (pFile , 0 , SEEK_END);
+    lSize = ftell (pFile);
+    rewind (pFile);
+
+    contents_out.resize(lSize, '\0');
+
+    result = fread (&(contents_out[0]), 1, lSize, pFile);
+
+    // Grab the modification time
+    stat_platform file_stat;
+    fstat_platform(fileno_platform(pFile), &file_stat);
+    *mtime = file_stat.st_mtime;
+
+    fclose (pFile);
+
+    return (result == lSize);
+}
+} // namespace
+
 v8::Handle<v8::Value> JSObjectScript::absoluteImport(const boost::filesystem::path& full_filename, const boost::filesystem::path& full_base_dir,bool isJS)
 {
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
     {
         JSLOG(error, "Error in absolute import.  Not within a context to import from.  Aborting call");
@@ -1043,28 +1677,54 @@ v8::Handle<v8::Value> JSObjectScript::absoluteImport(const boost::filesystem::pa
 
     JSLOG(detailed, " Performing import on absolute path: " << full_filename.string());
 
-    // Now try to read in and run the file.
-    FILE * pFile;
-    long lSize;
-    char * buffer;
-    long result;
-
-    pFile = fopen (full_filename.string().c_str(), "rb" );
-    if (pFile == NULL)
+    // Now try to read in and run the file. We want to avoid having to compile
+    // the file, so we use a cache of precompiled versions of the file
+    // if it's not javascript.
+    //
+    // We try to read both files, but we try the cached file first. That way,
+    // the worst that happens if the file gets replaced/updated is that we read
+    // the cached version before and the mtimes will cause us to ignore the
+    // cached script.
+    //
+    // The location of the cached file needs to be handled carefully. We place
+    // the cache under a temporary directory, isolate these files in their own
+    // subdirectory, "emerson_cache", and we use an *absolute* path (with the
+    // root path, e.g. / or C:/, removed) to generate the location within that
+    // directory, ensuring that there aren't any conflicts due to multiple
+    // import base paths.
+    boost::filesystem::path cache_dir(Path::Get(Path::DIR_TEMP, "emerson_cache"));
+    String cached_js_file =
+        (cache_dir /
+            boost::filesystem::complete(full_filename.parent_path()).relative_path() /
+            (full_filename.filename() + ".js.cache")).string();
+    String cached_contents;
+    int64 cached_mtime;
+    bool got_cached_js = false;
+    // Only actually try to get the cached version if its not JS
+    if (!isJS)
+        got_cached_js = read_file_contents(cached_js_file, cached_contents, &cached_mtime);
+    // Grab the original. TODO(ewencp) We could probably avoid actually reading
+    // the file by allowing read_file_contents to bail early when the cache
+    // validity check passes, but its not worth bothering with right now since
+    // these scripts are relatively small and it makes read_file_contents more
+    // complicated.
+    std::string contents;
+    int64 source_mtime;
+    bool read_success = read_file_contents(full_filename.string(), contents, &source_mtime);
+    if (!read_success)
         return v8::ThrowException( v8::Exception::Error(v8::String::New("Couldn't open file for import.")) );
 
-    fseek (pFile , 0 , SEEK_END);
-    lSize = ftell (pFile);
-    rewind (pFile);
+    // If we did get valid cached data, set thin
+    if (got_cached_js && cached_mtime > source_mtime) {
+        // Make the contents we execute the cached JS
+        contents = cached_contents;
+        // Cached data is JS, no need to recompile
+        isJS = true;
+        // And don't try to re-cache data we got out of the cache
+        cached_js_file = "";
+    }
 
-    std::string contents(lSize, '\0');
-
-    result = fread (&(contents[0]), 1, lSize, pFile);
-    fclose (pFile);
-
-    if (result != lSize)
-        return v8::ThrowException( v8::Exception::Error(v8::String::New("Failure reading file for import.")) );
-
+    // Setup eval context information
     EvalContext& ctx = mEvalContextStack.top();
     EvalContext new_ctx(ctx);
 
@@ -1074,12 +1734,14 @@ v8::Handle<v8::Value> JSObjectScript::absoluteImport(const boost::filesystem::pa
 
     mImportedFiles[jscont->getContextID()].insert( full_filename.string() );
 
-    v8::Handle<v8::Value> returner = protectedEval(contents, &origin, new_ctx,false,isJS);
+    // Eval
+    v8::Handle<v8::Value> returner = protectedEval(contents, &origin, new_ctx, false, cached_js_file, isJS);
     return  handle_scope.Close(returner);
 }
 
 std::string* JSObjectScript::extensionize(const String filename)
 {
+    JSSCRIPT_SERIAL_CHECK();
     std::string* fileToFind = new std::string(filename);
     int index = filename.find(".");
     if(index == -1)
@@ -1099,6 +1761,7 @@ std::string* JSObjectScript::extensionize(const String filename)
 
 v8::Handle<v8::Value> JSObjectScript::evalInGlobal(const String& contents, v8::ScriptOrigin* origin,JSContextStruct* jscs)
 {
+    JSSCRIPT_SERIAL_CHECK();
     EvalContext& ctx = mEvalContextStack.top();
     EvalContext new_ctx(ctx);
 
@@ -1111,6 +1774,7 @@ v8::Handle<v8::Value> JSObjectScript::evalInGlobal(const String& contents, v8::S
 
 v8::Handle<v8::Value> JSObjectScript::import(const String& filename,  bool isJS)
 {
+    JSSCRIPT_SERIAL_CHECK();
     JSLOG(detailed, "Importing: " << filename);
     v8::HandleScope handle_scope;
 
@@ -1123,8 +1787,11 @@ v8::Handle<v8::Value> JSObjectScript::import(const String& filename,  bool isJS)
 
     if(fileToFind == NULL)
     {
-      std::string errMsg = "Cannot import " + filename + ". Illegal file extension.";
-      return v8::ThrowException( v8::Exception::Error(v8::String::New(errMsg.c_str()) ) );;
+        std::string errMsg = "Cannot import " +
+            filename + ". Illegal file extension.";
+        
+        return v8::ThrowException(
+            v8::Exception::Error(v8::String::New(errMsg.c_str()) ) );
     }
     boost::filesystem::path full_filename, full_base;
     resolveImport(*fileToFind, &full_filename, &full_base);
@@ -1143,7 +1810,7 @@ v8::Handle<v8::Value> JSObjectScript::import(const String& filename,  bool isJS)
 
 v8::Handle<v8::Value> JSObjectScript::require(const String& filename,bool isJS)
 {
-
+    JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
     {
         JSLOG(error, "Error in require.  Not within a context to require from.  Aborting call");
@@ -1192,10 +1859,15 @@ v8::Handle<v8::Value> JSObjectScript::require(const String& filename,bool isJS)
 
 v8::Local<v8::Object> JSObjectScript::createContext(JSPresenceStruct* jspres,const SpaceObjectReference& canSendTo,uint32 capNum, JSContextStruct*& internalContextField, JSContextStruct* creator)
 {
+    JSSCRIPT_SERIAL_CHECK();
     v8::HandleScope handle_scope;
 
     v8::Local<v8::Object> returner =mManager->mContextTemplate->NewInstance();
-    internalContextField = new JSContextStruct(this,jspres,canSendTo,capNum,mManager->mContextGlobalTemplate,contIDTracker,creator);
+    internalContextField =
+        new JSContextStruct(
+            this,jspres,canSendTo,capNum,mManager->mContextGlobalTemplate,
+            contIDTracker,creator,mCtx);
+
     mContStructMap[contIDTracker] = internalContextField;
     ++contIDTracker;
 
@@ -1210,6 +1882,7 @@ v8::Local<v8::Object> JSObjectScript::createContext(JSPresenceStruct* jspres,con
 //Careful during serialization.  Need to add to context stack before deserializing.
 v8::Local<v8::Function> JSObjectScript::functionValue(const String& js_script_str)
 {
+    JSSCRIPT_SERIAL_CHECK();
   v8::HandleScope handle_scope;
 
   static int32 counter;

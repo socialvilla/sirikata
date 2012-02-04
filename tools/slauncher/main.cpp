@@ -12,6 +12,7 @@
 #include <sirikata/core/options/Options.hpp>
 #include <sirikata/core/options/CommonOptions.hpp>
 #include <sirikata/core/transfer/URI.hpp>
+#include <sirikata/core/transfer/URL.hpp>
 #include <sirikata/core/util/Paths.hpp>
 #include <boost/filesystem.hpp>
 #include <sirikata/core/transfer/AggregatedTransferPool.hpp>
@@ -35,6 +36,7 @@ void InitLauncherOptions() {
         .addOption(new OptionValue("register","false",Sirikata::OptionValueType<bool>(),"If true, registers this binary as handler"))
         .addOption(new OptionValue("unregister","false",Sirikata::OptionValueType<bool>(),"If true, unregisters this binary as handler"))
         .addOption(new OptionValue("uri","",Sirikata::OptionValueType<String>(),"The URI to launch"))
+        .addOption(new OptionValue("debug","false",Sirikata::OptionValueType<bool>(),"If true, try to run under the debugger"))
         ;
 }
 
@@ -42,7 +44,7 @@ String getExecutableName(String name) {
 #if SIRIKATA_DEBUG
     name = name + "_d";
 #endif
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
     name = name + ".exe";
 #endif
     return name;
@@ -52,7 +54,7 @@ String getExecutablePath(String name) {
     String exe_dir = Path::Get(Path::DIR_EXE);
 
     name = getExecutableName(name);
-#if SIRIKATA_PLATFORM == PLATFORM_MAC
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
     if (name == "cppoh" || name == "cppoh_d")
         name = name + ".app/Contents/MacOS/" + name;
 #endif
@@ -61,11 +63,15 @@ String getExecutablePath(String name) {
 }
 
 
-#if SIRIKATA_PLATFORM == PLATFORM_LINUX || SIRIKATA_PLATFORM == PLATFORM_MAC
-void execCommand(const char* file, const char* const argv[]) {
-    pid_t pID = fork();
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_LINUX || SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
+void execCommand(const char* file, const char* const argv[], bool do_fork = true)
+{
+    pid_t pID = 0;
+    if (do_fork)
+        pID = fork();
 
     if (pID == 0) {
+
         // setsid() decouples this process from the parent, ensuring that the
         // exit of the parent doesn't kill the child process by accident
         // (e.g. by causing the parent terminal to exit).
@@ -78,7 +84,7 @@ void execCommand(const char* file, const char* const argv[]) {
 }
 #endif
 
-#if SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 /* Set a registry key. Only creates the key if subkey == NULL. To set the default value, use subkey == "". */
 bool setRegKey(HKEY base, const char* key, const char* subkey = NULL, const char* value = NULL) {
     HKEY hkey;
@@ -109,7 +115,7 @@ bool registerURIHandler() {
     // gracefully, i.e. without having to reregister.
     String exe_file = getExecutablePath("slauncher");
 
-#if SIRIKATA_PLATFORM == PLATFORM_LINUX
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_LINUX
 
     // We register in two ways. The first way is for Firefox/Gnome and just adds
     // the appropriate command for the uri type to gconf. xdg-utils, it seems,
@@ -167,7 +173,7 @@ bool registerURIHandler() {
     }
 
 
-#elif SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
     String exe_name = getExecutableName("slauncher");
     // See http://msdn.microsoft.com/en-us/library/aa767914.aspx for an explanation of what these registry keys do.
     // NOTE: YOU MUST RUN THIS AS ADMINISTRATOR. It'll fail to add the keys if you don't.
@@ -187,7 +193,7 @@ bool registerURIHandler() {
     if (!success)
         LAUNCHER_LOG(error, "Failed to register handler in system registry.");
     return success;
-#elif SIRIKATA_PLATFORM == PLATFORM_MAC
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
     // FIXME
     LAUNCHER_LOG(error, "URI handler registration not supported on this platform.");
     return false;
@@ -202,10 +208,10 @@ bool unregisterURIHandler() {
     // See note in registerURIHandler
     String exe_file = getExecutablePath("slauncher");
 
-#if SIRIKATA_PLATFORM == PLATFORM_LINUX
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_LINUX
     const char* const enabled_argv[] = { "gconftool-2", "-t", "bool", "-s", "/desktop/gnome/url-handlers/sirikata/enabled", "false", NULL};
     execCommand("gconftool-2", enabled_argv);
-#elif SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
     bool success =
         deleteRegKey(HKEY_CLASSES_ROOT, "sirikata\\shell\\open\\command") &&
         deleteRegKey(HKEY_CLASSES_ROOT, "sirikata\\shell\\open") &&
@@ -214,7 +220,7 @@ bool unregisterURIHandler() {
         deleteRegKey(HKEY_CLASSES_ROOT, "sirikata");
     LAUNCHER_LOG(error, "Failed to unregister handler in system registry.");
     return success;
-#elif SIRIKATA_PLATFORM == PLATFORM_MAC
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
     // FIXME
 #endif
 
@@ -235,8 +241,8 @@ void stopWork() {
     ioWork = NULL;
 }
 
-void finishLaunchURI(Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data, int* retval);
-void finishDownloadResource(const String& data_path, Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data, int* retval);
+void finishLaunchURI(Transfer::URI config_uri, Transfer::ResourceDownloadTaskPtr taskptr, Transfer::TransferRequestPtr req, Transfer::DenseDataPtr data, int* retval);
+void finishDownloadResource(const String& data_path, Transfer::ResourceDownloadTaskPtr taskptr, Transfer::TransferRequestPtr req, Transfer::DenseDataPtr data, int* retval);
 void doExecApp(int* retval);
 
 Transfer::ResourceDownloadTaskPtr rdl;
@@ -261,7 +267,7 @@ bool startLaunchURI(String uri_str, int* retval) {
     rdl =
         Transfer::ResourceDownloadTask::construct(
             config_uri, gTransferPool, 1.0,
-            gContext->mainStrand->wrap(std::tr1::bind(finishLaunchURI, std::tr1::placeholders::_1, std::tr1::placeholders::_2, retval))
+            gContext->mainStrand->wrap(std::tr1::bind(finishLaunchURI, config_uri, std::tr1::placeholders::_1, std::tr1::placeholders::_2, std::tr1::placeholders::_3, retval))
         );
     rdl->start();
 
@@ -278,31 +284,13 @@ String appDir;
 String binary;
 std::vector<String> binaryArgs;
 String appDirPath() {
-    // For now, we put it within the bin directory. This probably isn't a good
-    // long term solution since we could be installed in a system path.
-#if SIRIKATA_PLATFORM == PLATFORM_LINUX || SIRIKATA_PLATFORM == PLATFORM_MAC
-    return (boost::filesystem::path(Path::Get(Path::DIR_EXE)) / appDir).string();
-#elif SIRIKATA_PLATFORM == PLATFORM_WINDOWS
-    boost::filesystem::path exe_path(Path::Get(Path::DIR_EXE));
-    // Windows has the Release & Debug directories when we're in the
-    // build tree. Try detecting and removing them.
-    if (exe_path.has_filename() &&
-        (exe_path.filename() == "Debug" ||
-            exe_path.filename() == "Release" ||
-            exe_path.filename() == "RelWithDebInfo"
-        )
-    ) {
-        exe_path = exe_path.parent_path();
-    }
-    return (exe_path / appDir).string();
-#endif
-
+    return (boost::filesystem::path(Path::Get(Path::DIR_USER_HIDDEN)) / appDir).string();
 }
 
 typedef std::map<String, Transfer::ResourceDownloadTaskPtr> ResourceDownloadMap;
 ResourceDownloadMap resourceDownloads;
 
-void finishLaunchURI(Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data, int* retval) {
+void finishLaunchURI(Transfer::URI config_uri, Transfer::ResourceDownloadTaskPtr taskptr, Transfer::TransferRequestPtr req, Transfer::DenseDataPtr data, int* retval) {
     // Fire off the request for
     if (!data || data->size() == 0) {
         LAUNCHER_LOG(error, "Failed to download config");
@@ -351,7 +339,7 @@ void finishLaunchURI(Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data,
             return;
         }
     }
-    LAUNCHER_LOG(error, "Using appliction directory: " << appDirPath());
+    LAUNCHER_LOG(info, "Using appliction directory: " << appDirPath());
 
     // This is not required data
     try {
@@ -359,7 +347,21 @@ void finishLaunchURI(Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data,
         BOOST_FOREACH(ptree::value_type &v,
             pt.get_child("app.files")) {
             String data_path(v.first);
+
+            // Handle relative URLs carefullly.
+            // By default, we'll just try handling
             Transfer::URI data_uri(v.second.data());
+            // And we'll only override it with a relative one if the relative
+            // one can be decoded as a URL.
+            Transfer::URL config_url(config_uri);
+            if (!config_url.empty()) {
+                // Constructor figures out absolute/relative, and just fails if
+                // it can't construct a valid URL.
+                Transfer::URL deriv_url(config_url.context(), v.second.data());
+                if (!deriv_url.empty())
+                    data_uri = Transfer::URI(deriv_url.toString());
+            }
+
             LAUNCHER_LOG(detailed, "Download resource " << data_path << " from " << data_uri);
             Transfer::ResourceDownloadTaskPtr dl =
                 Transfer::ResourceDownloadTask::construct(
@@ -367,7 +369,8 @@ void finishLaunchURI(Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data,
                     gContext->mainStrand->wrap(
                         std::tr1::bind(finishDownloadResource,
                             data_path,
-                            std::tr1::placeholders::_1, std::tr1::placeholders::_2, retval
+                            std::tr1::placeholders::_1, std::tr1::placeholders::_2,
+                            std::tr1::placeholders::_3, retval
                         )
                     )
                 );
@@ -383,7 +386,7 @@ void finishLaunchURI(Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data,
     }
 }
 
-void finishDownloadResource(const String& data_path, Transfer::ChunkRequestPtr req, Transfer::DenseDataPtr data, int* retval) {
+void finishDownloadResource(const String& data_path, Transfer::ResourceDownloadTaskPtr taskptr, Transfer::TransferRequestPtr req, Transfer::DenseDataPtr data, int* retval) {
     if (!data || data->size() == 0) {
         LAUNCHER_LOG(error, "Failed to download data file: " << data_path);
         eventLoopExit(retval, -1);
@@ -393,8 +396,25 @@ void finishDownloadResource(const String& data_path, Transfer::ChunkRequestPtr r
     // Store to disk
     boost::filesystem::path app_data_path(appDirPath());
     app_data_path /= data_path;
+
+    // Make sure the directory exists. If we had sirikata/bin/demo/ as
+    // the app data path and foo/bar/bin.db as the file, we need to
+    // make sure sirikata/bin/demo/foo/bar/ exists, which is the
+    // parent of the full data file path. We know from earlier that
+    // we've already got sirikata/bin/demo/.
+    if (!boost::filesystem::exists(app_data_path.parent_path()) &&
+        !boost::filesystem::create_directories(app_data_path.parent_path())) {
+        LAUNCHER_LOG(error, "Couldn't create data directory: " << app_data_path.parent_path().string());
+        eventLoopExit(retval, -1);
+        return;
+    }
+
     String app_data_path_str = app_data_path.string();
     FILE* fp = fopen(app_data_path_str.c_str(), "wb");
+    if (fp == NULL) {
+        LAUNCHER_LOG(error, "Couldn't open file for writing: " << app_data_path_str);
+        eventLoopExit(retval, -1);
+    }
     fwrite(data->begin(), 1, data->size(), fp);
     fclose(fp);
 
@@ -414,15 +434,28 @@ void doExecApp(int* retval) {
     // something like app.data = url for archive) which will require
     // additional downloading, but for now we just invoke the command
     // here.
-#if SIRIKATA_PLATFORM == PLATFORM_LINUX || SIRIKATA_PLATFORM == PLATFORM_MAC
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_LINUX || SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_MAC
     String appExe = getExecutablePath(binary);
     binaryArgs.insert(binaryArgs.begin(), appExe);
+
+    bool do_fork = true;
+    bool do_debug = GetOptionValue<bool>("debug");
+    if (do_debug) {
+        // We need to prefix gdb --args and change the app name to
+        // gdb. Also don't fork so we can actually use gdb
+        binaryArgs.insert(binaryArgs.begin(), "--args");
+        binaryArgs.insert(binaryArgs.begin(), "gdb");
+        appExe = "gdb";
+        do_fork = false;
+    }
+
+    // Generate a version of the args that can be used by exec
     const char** execArgs = new const char*[binaryArgs.size()+1];
     for(uint32 i = 0; i < binaryArgs.size(); i++)
         execArgs[i] = binaryArgs[i].c_str();
     execArgs[binaryArgs.size()] = NULL;
-    execCommand(appExe.c_str(), execArgs);
-#elif SIRIKATA_PLATFORM == PLATFORM_WINDOWS
+    execCommand(appExe.c_str(), execArgs, do_fork);
+#elif SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
     String appExe = getExecutablePath(binary);
     binaryArgs.insert(binaryArgs.begin(), appExe);
     String cmd = "";

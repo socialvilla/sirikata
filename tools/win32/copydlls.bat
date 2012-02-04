@@ -43,6 +43,9 @@ copy dependencies\installed-gsl\bin\*.dll %RELDEST%
 copy dependencies\FreeImage\*.dll %DEBDEST%
 copy dependencies\FreeImage\*.dll %RELDEST%
 
+copy dependencies\installed-ffmpeg\bin\*.dll %DEBDEST%
+copy dependencies\installed-ffmpeg\bin\*.dll %RELDEST%
+
 mkdir %DEBDEST%\chrome
 mkdir %DEBDEST%\chrome\img
 mkdir %DEBDEST%\chrome\css
@@ -51,11 +54,11 @@ mkdir %RELDEST%\chrome
 mkdir %RELDEST%\chrome\img
 mkdir %RELDEST%\chrome\css
 mkdir %RELDEST%\chrome\js
-copy libproxyobject\plugins\ogre\data\chrome\*.* %DEBDEST%\chrome
-copy libproxyobject\plugins\ogre\data\chrome\*.* %RELDEST%\chrome
-copy libproxyobject\plugins\ogre\data\chrome\ui\*.* %DEBDEST%\chrome\ui
-copy libproxyobject\plugins\ogre\data\chrome\ui\*.* %RELDEST%\chrome\ui
-copy libproxyobject\plugins\ogre\data\chrome\img\*.* %DEBDEST%\chrome\img
-copy libproxyobject\plugins\ogre\data\chrome\img\*.* %RELDEST%\chrome\img
-copy libproxyobject\plugins\ogre\data\chrome\js\*.* %DEBDEST%\chrome\js
-copy libproxyobject\plugins\ogre\data\chrome\js\*.* %RELDEST%\chrome\js
+copy liboh\plugins\ogre\data\chrome\*.* %DEBDEST%\chrome
+copy liboh\plugins\ogre\data\chrome\*.* %RELDEST%\chrome
+copy liboh\plugins\ogre\data\chrome\ui\*.* %DEBDEST%\chrome\ui
+copy liboh\plugins\ogre\data\chrome\ui\*.* %RELDEST%\chrome\ui
+copy liboh\plugins\ogre\data\chrome\img\*.* %DEBDEST%\chrome\img
+copy liboh\plugins\ogre\data\chrome\img\*.* %RELDEST%\chrome\img
+copy liboh\plugins\ogre\data\chrome\js\*.* %DEBDEST%\chrome\js
+copy liboh\plugins\ogre\data\chrome\js\*.* %RELDEST%\chrome\js

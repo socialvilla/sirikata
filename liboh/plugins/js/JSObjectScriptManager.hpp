@@ -44,7 +44,8 @@
 
 #include <v8.h>
 
-
+#define JS_SCRIPTS_DIR "js/scripts"
+#define JS_PLUGINS_DIR "liboh/plugins"
 
 namespace Sirikata {
 namespace JS {
@@ -83,6 +84,11 @@ public:
 
 private:
     ObjectHostContext* mContext;
+    /**
+       lkjs;
+       FIXME: Who is in charge of deleting the isolate?
+     */
+    v8::Isolate* mIsolate;
 
     void createVisibleTemplate();
     void createPresenceTemplate();
@@ -129,7 +135,7 @@ private:
     ModelsSystem* mModelParser;
     Mesh::Filter* mModelFilter;
 
-    void meshDownloaded(Transfer::ChunkRequestPtr request, Transfer::DenseDataPtr data);
+    void meshDownloaded(Transfer::ResourceDownloadTaskPtr taskptr, Transfer::TransferRequestPtr request, Transfer::DenseDataPtr data);
     void parseMeshWork(const Transfer::RemoteFileMetadata& metadata, const Transfer::Fingerprint& fp, Transfer::DenseDataPtr data);
     void meshParsed();
     void finishMeshDownload(const Transfer::URI& uri, Mesh::VisualPtr mesh);
