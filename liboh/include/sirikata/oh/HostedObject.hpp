@@ -114,8 +114,6 @@ class SIRIKATA_OH_EXPORT HostedObject
 
     friend class ::Sirikata::SelfWeakPtr<VWObject>;
     friend class PerPresenceData;
-    AtomicValue<int> mNumOutstandingConnections;
-    bool mDestroyWhenConnected;
 
 public:
     typedef SST::EndPoint<SpaceObjectReference> EndPointType;

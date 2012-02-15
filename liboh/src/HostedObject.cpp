@@ -71,8 +71,6 @@ HostedObject::HostedObject(ObjectHostContext* ctx, ObjectHost*parent, const UUID
    mObjectScript(NULL),
    destroyed(false)
 {
-    mNumOutstandingConnections=0;
-    mDestroyWhenConnected=false;
     mDelegateODPService = new ODP::DelegateService(
         std::tr1::bind(
             &HostedObject::createDelegateODPPort, this,
@@ -172,10 +170,6 @@ void HostedObject::destroy(bool need_self)
 {
     // Avoid recursive destruction
     if (destroyed) return;
-    if (mNumOutstandingConnections>0) {
-        mDestroyWhenConnected=true;
-        return;//don't destroy during delicate connection process
-    }
 
     // Make sure that we survive the entire duration of this call. Otherwise all
     // references may be lost, resulting in the destructor getting called
@@ -346,10 +340,9 @@ bool HostedObject::connect(
         std::tr1::bind(&HostedObject::handleConnected, getWeakPtr(), _1, _2, _3),
         std::tr1::bind(&HostedObject::handleMigrated, getWeakPtr(), _1, _2, _3),
         std::tr1::bind(&HostedObject::handleStreamCreated, getWeakPtr(), _1, _2, token),
-        mContext->mainStrand->wrap(std::tr1::bind(&HostedObject::handleDisconnected, getWeakPtr(), _1, _2))
+        std::tr1::bind(&HostedObject::handleDisconnected, getWeakPtr(), _1, _2)
         )) {
         mObjectHost->registerHostedObject(connectingSporef,getSharedPtr());
-        mNumOutstandingConnections++;
         return true;
     }else {
         return false;
@@ -458,14 +451,9 @@ void HostedObject::handleStreamCreated(const HostedObjectWPtr& weakSelf, const S
 
     Mutex::scoped_lock lock(self->notifyMutex);
     HO_LOG(detailed,"Notifying of connected object " << spaceobj.object() << " to space " << spaceobj.space());
-    if (after == SessionManager::Connected) {
+    if (after == SessionManager::Connected)
         self->notify(&SessionEventListener::onConnected, self, spaceobj, token);
-        if (--self->mNumOutstandingConnections==0&&self->mDestroyWhenConnected) {
-            self->mDestroyWhenConnected=false;
-            self->destroy(true);
-        }
-
-    } else if (after == SessionManager::Migrated)
+    else if (after == SessionManager::Migrated)
         self->notify(&SessionEventListener::onMigrated, self, spaceobj, token);
 }
 
@@ -529,10 +517,6 @@ void HostedObject::iHandleDisconnected(
     if (cc == Disconnect::LoginDenied) {
         assert(self->mPresenceData.find(spaceobj)==self->mPresenceData.end());
         self->mObjectHost->unregisterHostedObject(spaceobj, self.get());
-        if (--self->mNumOutstandingConnections==0&&self->mDestroyWhenConnected) {
-            self->mDestroyWhenConnected=false;
-            self->destroy(true);
-        }
     }
 }
 
