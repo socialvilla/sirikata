@@ -33,7 +33,7 @@
 #include <sirikata/core/util/Timer.hpp>
 #include <sirikata/core/network/NTPTimeSync.hpp>
 
-#include "ObjectHost.hpp"
+#include "SimObjectHost.hpp"
 #include "Object.hpp"
 #include "ObjectFactory.hpp"
 #include "ScenarioFactory.hpp"
@@ -43,8 +43,6 @@
 #include <sirikata/core/util/PluginManager.hpp>
 #include <sirikata/core/trace/Trace.hpp>
 #include <sirikata/core/network/ServerIDMap.hpp>
-
-#include <sirikata/core/network/IOServiceFactory.hpp>
 
 void *main_loop(void *);
 int main(int argc, char** argv) {
@@ -60,7 +58,9 @@ int main(int argc, char** argv) {
 
     PluginManager plugins;
     plugins.loadList( GetOptionValue<String>(OPT_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_EXTRA_PLUGINS) );
     plugins.loadList( GetOptionValue<String>(OPT_OH_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_OH_EXTRA_PLUGINS) );
 
     // Fill defaults after plugin loading to ensure plugin-added
     // options get their defaults.
@@ -94,8 +94,8 @@ int main(int argc, char** argv) {
 
     srand( GetOptionValue<uint32>("rand-seed") );
 
-    Network::IOService* ios = Network::IOServiceFactory::makeIOService();
-    Network::IOStrand* mainStrand = ios->createStrand();
+    Network::IOService* ios = new Network::IOService("simoh");
+    Network::IOStrand* mainStrand = ios->createStrand("simoh Main");
 
     ODPSST::ConnectionManager* sstConnMgr = new ODPSST::ConnectionManager();
     OHDPSST::ConnectionManager* ohSSTConnMgr = new OHDPSST::ConnectionManager();
@@ -124,11 +124,7 @@ int main(int argc, char** argv) {
         if (start_time > now_time) {
             Duration sleep_time = start_time - now_time;
             printf("Waiting %f seconds\n", sleep_time.toSeconds() ); fflush(stdout);
-#if SIRIKATA_PLATFORM == SIRIKATA_WINDOWS
-            Sleep( sleep_time.toMilliseconds() );
-#else
-            usleep( sleep_time.toMicroseconds() );
-#endif
+            Timer::sleep(sleep_time);
         }
     }
 
@@ -165,7 +161,7 @@ int main(int argc, char** argv) {
     gTrace = NULL;
 
     delete mainStrand;
-    Network::IOServiceFactory::destroyIOService(ios);
+    delete ios;
 
     sync.stop();
 

@@ -51,6 +51,10 @@ namespace Trace {
 class Trace;
 }
 
+namespace Command {
+class Commander;
+}
+
 /** Base class for Contexts, provides basic infrastructure such as IOServices,
  *  IOStrands, Trace, and timing information.
  */
@@ -151,6 +155,12 @@ public:
         return mTrace;
     }
 
+    Command::Commander* commander() const {
+        return mCommander;
+    }
+    void setCommander(Command::Commander* c);
+
+    const String name;
     Network::IOService* ioService;
     Network::IOStrand* mainStrand;
     TimeProfiler* profiler;
@@ -171,7 +181,7 @@ protected:
     // invoked after waiting a sufficient period after an initial stop
     // request.
     void forceQuit() {
-        SILOG(forcequit,fatal,"[FORCEQUIT] Fatal error: Quit forced by timeout.");
+        SILOG(forcequit,fatal,"Fatal error: Quit forced by timeout.");
         ioService->stop();
     }
 
@@ -182,6 +192,7 @@ protected:
     void handleSignal(Signal::Type stype);
 
     Trace::Trace* mTrace;
+    Command::Commander* mCommander;
 
     Sirikata::AtomicValue<Time> mEpoch;
     Sirikata::AtomicValue<Time> mLastSimTime;

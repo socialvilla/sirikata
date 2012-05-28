@@ -41,13 +41,14 @@
 
 #include <sirikata/core/network/Stream.hpp>
 #include <sirikata/core/util/SpaceID.hpp>
+#include <sirikata/core/util/Liveness.hpp>
 
 #include "QueueRouterElement.hpp"
 
 namespace Sirikata {
 
 // Connections to servers
-struct SIRIKATA_OH_EXPORT SpaceNodeConnection {
+struct SIRIKATA_OH_EXPORT SpaceNodeConnection : public Liveness {
   public:
     typedef OHDPSST::Stream OHSSTStream;
     typedef OHSSTStream::Ptr OHSSTStreamPtr;
@@ -101,7 +102,7 @@ struct SIRIKATA_OH_EXPORT SpaceNodeConnection {
     void handleStreamConnected(const Network::Stream::ConnectionStatus status, const std::string& reason, int err, OHSSTStreamPtr strm);
 
     // Callback for when the connection receives data
-    void handleRead(Sirikata::Network::Chunk& chunk, const Sirikata::Network::Stream::PauseReceiveCallback& pause);
+    void handleRead(const Sirikata::Network::Chunk& chunk, const Sirikata::Network::Stream::PauseReceiveCallback& pause);
 
     // Main Strand
     typedef std::vector<GotSpaceConnectionCallback> ConnectionCallbackList;

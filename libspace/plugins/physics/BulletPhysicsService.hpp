@@ -81,7 +81,7 @@ public:
     void setOrientation(const UUID& uuid, const TimedMotionQuaternion& neworient);
 
 
-    virtual void addLocalObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics);
+  virtual void addLocalObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics, const String& zernike);
     virtual void removeLocalObject(const UUID& uuid);
 
     virtual void addLocalAggregateObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics);
@@ -92,7 +92,7 @@ public:
     virtual void updateLocalAggregateMesh(const UUID& uuid, const String& newval);
     virtual void updateLocalAggregatePhysics(const UUID& uuid, const String& newval);
 
-    virtual void addReplicaObject(const Time& t, const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics);
+  virtual void addReplicaObject(const Time& t, const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics, const String& zernike);
     virtual void removeReplicaObject(const Time& t, const UUID& uuid);
 
     virtual void receiveMessage(Message* msg);
@@ -148,6 +148,13 @@ protected:
     // Objects which have outstanding updates to location information
     // from the physics engine.
     UUIDSet physicsUpdates;
+    // TODO(ewencp) This is kind of a hack. If we generate updates too quickly
+    // we can overwhelm the client and the networking, making it hard for more
+    // recent updates to get out. This is common for bullet since it is
+    // constantly updating positions. To avoid this, we trigger the update
+    // policy less frequently, possibly at the cost of higher average latency
+    // for updates to reach the OH.
+    uint32 mUpdateIteration;
 
     typedef std::tr1::unordered_map<UUID, Transfer::ResourceDownloadTaskPtr, UUID::Hasher> MeshDownloadMap;
     MeshDownloadMap mMeshDownloads;

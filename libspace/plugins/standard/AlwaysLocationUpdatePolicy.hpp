@@ -89,22 +89,6 @@ public:
 private:
     void reportStats();
 
-    void tryCreateChildStream(const UUID& dest, ODPSST::Stream::Ptr parent_stream, std::string* msg, int count);
-    void objectLocSubstreamCallback(int x, ODPSST::Stream::Ptr substream, const UUID& dest, ODPSST::Stream::Ptr parent_substream, std::string* msg, int count);
-    void tryCreateChildStream(const OHDP::NodeID& dest, OHDPSST::Stream::Ptr parent_stream, std::string* msg, int count);
-    void ohLocSubstreamCallback(int x, OHDPSST::Stream::Ptr substream, const OHDP::NodeID& dest, OHDPSST::Stream::Ptr parent_substream, std::string* msg, int count);
-
-    bool validSubscriber(const UUID& dest);
-    bool validSubscriber(const OHDP::NodeID& dest);
-    bool validSubscriber(const ServerID& dest);
-
-    bool isSelfSubscriber(const UUID& sid, const UUID& observed);
-    bool isSelfSubscriber(const OHDP::NodeID& sid, const UUID& observed);
-    bool isSelfSubscriber(const ServerID& sid, const UUID& observed);
-
-    bool trySend(const UUID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu);
-    bool trySend(const OHDP::NodeID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu);
-    bool trySend(const ServerID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu);
 
     struct UpdateInfo {
         uint64 epoch;
@@ -115,26 +99,39 @@ private:
         String physics;
     };
 
+    typedef std::set<UUID> UUIDSet;
+
+    struct SubscriberInfo {
+        SubscriberInfo(SeqNoPtr seq_number_ptr )
+            : seqnoPtr(seq_number_ptr)
+        {}
+        SeqNoPtr seqnoPtr;
+        UUIDSet subscribedTo;
+        std::map<UUID, UpdateInfo> outstandingUpdates;
+        // Sometimes a subscriber may stall or hang, leaving the underlying
+        // connection open but not handling loc update substreams. In this
+        // case, we can end up generating a ton of update streams that fail
+        // and eat up a bunch of our processor just looping for
+        // retries. With objects moving, we could get arbitarily many
+        // outstanding updates since once the substream request is started
+        // it frees up the spot in the outstandingUpdates map above,
+        // allowing more for the same object to be sent. To protect against
+        // this, we track how many loc update messages are outstanding and
+        // stall updates while we're waiting for them to return (or fail!).
+        long numOutstandingMessages()const {
+            return seqnoPtr.use_count()-1;
+        }
+        
+    };
+
     template<typename SubscriberType>
     struct SubscriberIndex {
         AlwaysLocationUpdatePolicy* parent;
         AtomicValue<uint32>& sent_count;
-
-        typedef std::set<UUID> UUIDSet;
         typedef std::set<SubscriberType> SubscriberSet;
-
-        struct SubscriberInfo {
-            SubscriberInfo(SeqNoPtr seq_number_ptr )
-             : seqnoPtr(seq_number_ptr)
-            {}
-
-            SeqNoPtr seqnoPtr;
-            UUIDSet subscribedTo;
-            std::map<UUID, UpdateInfo> outstandingUpdates;
-        };
-
+        typedef std::tr1::shared_ptr<SubscriberInfo> SubscriberInfoPtr;        
         // Forward index: Subscriber -> Objects + Updates
-        typedef std::map<SubscriberType, SubscriberInfo*> SubscriberMap;
+        typedef std::map<SubscriberType, SubscriberInfoPtr> SubscriberMap;
         SubscriberMap mSubscriptions;
         // Reverse index: Objects -> Subscribers
         typedef std::map<UUID, SubscriberSet*> ObjectSubscribersMap;
@@ -148,7 +145,7 @@ private:
 
         ~SubscriberIndex() {
             for(typename SubscriberMap::iterator sub_it = mSubscriptions.begin(); sub_it != mSubscriptions.end(); sub_it++)
-                delete sub_it->second;
+                sub_it->second.reset();
             mSubscriptions.clear();
 
             for(typename ObjectSubscribersMap::iterator sub_it = mObjectSubscribers.begin(); sub_it != mObjectSubscribers.end(); sub_it++)
@@ -160,12 +157,12 @@ private:
             // Add object to server's subscription list
             typename SubscriberMap::iterator sub_it = mSubscriptions.find(remote);
             if (sub_it == mSubscriptions.end()) {
-                mSubscriptions[remote] = new SubscriberInfo(seqnoPtr);
+                SubscriberInfoPtr sub_info(new SubscriberInfo(seqnoPtr));
+                mSubscriptions.insert(typename SubscriberMap::value_type(remote,sub_info));
 
                 sub_it = mSubscriptions.find(remote);
             }
-            SubscriberInfo* subs = sub_it->second;
-            subs->subscribedTo.insert(uuid);
+            sub_it->second->subscribedTo.insert(uuid);
 
             // Add server to object's subscribers list
             typename ObjectSubscribersMap::iterator obj_sub_it = mObjectSubscribers.find(uuid);
@@ -187,8 +184,7 @@ private:
             // Remove object from server's list
             typename SubscriberMap::iterator sub_it = mSubscriptions.find(remote);
             if (sub_it != mSubscriptions.end()) {
-                SubscriberInfo* subs = sub_it->second;
-                subs->subscribedTo.erase(uuid);
+                sub_it->second->subscribedTo.erase(uuid);
             }
 
             // Remove server from object's list
@@ -204,7 +200,7 @@ private:
             if (sub_it == mSubscriptions.end())
                 return;
 
-            SubscriberInfo* subs = sub_it->second;
+            std::tr1::shared_ptr<SubscriberInfo> subs = sub_it->second;
 
             while(!subs->subscribedTo.empty()) {
                 UUID tmp=*(subs->subscribedTo.begin());
@@ -239,7 +235,7 @@ private:
         void propertyUpdatedForSubscriber(const UUID& uuid, LocationService* locservice, SubscriberType sub, UpdateFunctor fup) {
             if (mSubscriptions.find(sub) == mSubscriptions.end()) return; // XXX FIXME
             assert(mSubscriptions.find(sub) != mSubscriptions.end());
-            SubscriberInfo* sub_info = mSubscriptions[sub];
+            std::tr1::shared_ptr<SubscriberInfo> sub_info = mSubscriptions[sub];
             if (sub_info->subscribedTo.find(uuid) == sub_info->subscribedTo.end()) return; // XXX FIXME
             assert(sub_info->subscribedTo.find(uuid) != sub_info->subscribedTo.end());
 
@@ -306,12 +302,14 @@ private:
 
         void service() {
             uint32 max_updates = GetOptionValue<uint32>(ALWAYS_POLICY_OPTIONS, LOC_MAX_PER_RESULT);
+            const uint32 outstanding_message_hard_limit = 64;
+            const uint32 outstanding_message_soft_limit = 25;
 
             std::list<SubscriberType> to_delete;
 
             for(typename SubscriberMap::iterator server_it = mSubscriptions.begin(); server_it != mSubscriptions.end(); server_it++) {
                 SubscriberType sid = server_it->first;
-                SubscriberInfo* sub_info = server_it->second;
+                std::tr1::shared_ptr<SubscriberInfo> sub_info = server_it->second;
 
                 // We can end up with leftover updates after a subscriber has
                 // already disconnected. We need to ignore them if we're not
@@ -319,7 +317,7 @@ private:
                 if (!parent->validSubscriber(sid)) {
                     sub_info->outstandingUpdates.clear();
                     if (sub_info->subscribedTo.empty()) {
-                        delete sub_info;
+                        sub_info.reset();
                         to_delete.push_back(sid);
                     }
                     continue;
@@ -329,7 +327,10 @@ private:
 
                 bool send_failed = false;
                 std::map<UUID, UpdateInfo>::iterator last_shipped = sub_info->outstandingUpdates.begin();
-                for(std::map<UUID, UpdateInfo>::iterator up_it = sub_info->outstandingUpdates.begin(); up_it != sub_info->outstandingUpdates.end(); up_it++) {
+                for(std::map<UUID, UpdateInfo>::iterator up_it = sub_info->outstandingUpdates.begin();
+                    sub_info->numOutstandingMessages() < outstanding_message_soft_limit && up_it != sub_info->outstandingUpdates.end();
+                    up_it++)
+                {
                     Sirikata::Protocol::Loc::ILocationUpdate update = bulk_update.add_update();
                     update.set_object(up_it->first);
 
@@ -357,7 +358,7 @@ private:
 
                     // If we hit the limit for this update, try to send it out
                     if (bulk_update.update_size() > (int32)max_updates) {
-                        bool sent = parent->trySend(sid, bulk_update);
+                        bool sent = parent->trySend(sid, bulk_update, sub_info);
                         if (!sent) {
                             send_failed = true;
                             break;
@@ -371,8 +372,8 @@ private:
                 }
 
                 // Try to send the last few if necessary/possible
-                if (!send_failed && bulk_update.update_size() > 0) {
-                    bool sent = parent->trySend(sid, bulk_update);
+                if (sub_info->numOutstandingMessages() < outstanding_message_hard_limit && !send_failed && bulk_update.update_size() > 0) {
+                    bool sent = parent->trySend(sid, bulk_update, sub_info);
                     if (sent) {
                         last_shipped = sub_info->outstandingUpdates.end();
                         sent_count++;
@@ -383,7 +384,7 @@ private:
                 sub_info->outstandingUpdates.erase( sub_info->outstandingUpdates.begin(), last_shipped);
 
                 if (sub_info->subscribedTo.empty() && sub_info->outstandingUpdates.empty()) {
-                    delete sub_info;
+                    sub_info.reset();
                     to_delete.push_back(sid);
                 }
             }
@@ -393,7 +394,23 @@ private:
         }
 
     };
+    typedef std::tr1::shared_ptr<SubscriberInfo> SubscriberInfoPtr;
+    void tryCreateChildStream(const UUID& dest, ODPSST::Stream::Ptr parent_stream, std::string* msg, int count, const SubscriberInfoPtr&numOutstandingMessageCount);
+    void objectLocSubstreamCallback(int x, ODPSST::Stream::Ptr substream, const UUID& dest, ODPSST::Stream::Ptr parent_substream, std::string* msg, int count, const SubscriberInfoPtr&numOutstandingMessageCount);
+    void tryCreateChildStream(const OHDP::NodeID& dest, OHDPSST::Stream::Ptr parent_stream, std::string* msg, int count, const SubscriberInfoPtr&numOutstandingMessageCount);
+    void ohLocSubstreamCallback(int x, OHDPSST::Stream::Ptr substream, const OHDP::NodeID& dest, OHDPSST::Stream::Ptr parent_substream, std::string* msg, int count, const SubscriberInfoPtr&numOutstandingMessageCount);
 
+    bool validSubscriber(const UUID& dest);
+    bool validSubscriber(const OHDP::NodeID& dest);
+    bool validSubscriber(const ServerID& dest);
+
+    bool isSelfSubscriber(const UUID& sid, const UUID& observed);
+    bool isSelfSubscriber(const OHDP::NodeID& sid, const UUID& observed);
+    bool isSelfSubscriber(const ServerID& sid, const UUID& observed);
+
+    bool trySend(const UUID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu, const SubscriberInfoPtr& numOutstandingMessageCount);
+    bool trySend(const OHDP::NodeID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu, const SubscriberInfoPtr& numOutstandingMessageCount);
+    bool trySend(const ServerID& dest, const Sirikata::Protocol::Loc::BulkLocationUpdate& blu, const SubscriberInfoPtr& numOutstandingMessageCount);
     Poller mStatsPoller;
     Time mLastStatsTime;
     const String mTimeSeriesServerUpdatesName;

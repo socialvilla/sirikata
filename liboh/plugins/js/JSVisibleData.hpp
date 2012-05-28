@@ -101,11 +101,13 @@ public:
     virtual void disable();
 
     // IPresencePropertiesRead Interface
-    virtual const TimedMotionVector3f& location() const { return proxy->location(); }
-    virtual const TimedMotionQuaternion& orientation() const { return proxy->orientation(); }
-    virtual const BoundingSphere3f& bounds() const { return proxy->bounds(); }
-    virtual const Transfer::URI& mesh() const { return proxy->mesh(); }
-    virtual const String& physics() const { return proxy->physics(); }
+    virtual TimedMotionVector3f location() const { return proxy->location(); }
+    virtual TimedMotionQuaternion orientation() const { return proxy->orientation(); }
+    virtual BoundingSphere3f bounds() const { return proxy->bounds(); }
+    virtual Transfer::URI mesh() const { return proxy->mesh(); }
+    virtual String physics() const { return proxy->physics(); }
+    virtual bool isAggregate() const { return proxy->isAggregate(); }
+    virtual ObjectReference parent() const { return proxy->parentAggregate(); }
 
 private:
     JSProxyVisibleData();
@@ -142,11 +144,13 @@ public:
     bool visibleToPresence() const;
 
     // IPresencePropertiesRead Interface
-    virtual const TimedMotionVector3f& location() const;
-    virtual const TimedMotionQuaternion& orientation() const;
-    virtual const BoundingSphere3f& bounds() const;
-    virtual const Transfer::URI& mesh() const;
-    virtual const String& physics() const;
+    virtual TimedMotionVector3f location() const;
+    virtual TimedMotionQuaternion orientation() const;
+    virtual BoundingSphere3f bounds() const;
+    virtual Transfer::URI mesh() const;
+    virtual String physics() const;
+    virtual bool isAggregate() const;
+    virtual ObjectReference parent() const;
 
     // JSVisibleDataListener
     virtual void removeVisibleData(JSVisibleData* data);
@@ -180,6 +184,11 @@ private:
     typedef std::map<SpaceObjectReference, JSVisibleDataPtr> ChildMap;
     ChildMap mChildren;
     SpaceObjectReference mBest;
+
+    typedef boost::mutex Mutex;
+    Mutex childMutex;
+
+
 };
 
 } // namespace JS

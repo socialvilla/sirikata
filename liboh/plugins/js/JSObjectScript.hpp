@@ -141,7 +141,7 @@ public:
     //context on mEvalContextStack.
     v8::Handle<v8::Value> pushEvalContextScopeDirectory(const String& newDir);
     v8::Handle<v8::Value> popEvalContextScopeDirectory();
-    
+
     /**
        Returns true if context eval stack is not empty and if the top context on
        the stack allows operation associated with whatCap on jspres.  Returns
@@ -215,12 +215,9 @@ public:
     v8::Handle<v8::Value> evalInGlobal(const String& contents, v8::ScriptOrigin* em_script_name,JSContextStruct* jscs);
 
 
-protected:
-
-
-
-
     JSCtx* mCtx;
+
+protected:
 
     // Object host internal identifier for the object associated with
     // this script. We copy this information here because this base
@@ -344,13 +341,13 @@ protected:
 
     void storageCommitCallback(
         JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-        bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+        OH::Storage::Result result, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
         Liveness::Token ctxAlive);
 
     void storageCountCallback(JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-        bool success, int32 count,Liveness::Token objAlive,Liveness::Token ctxAlive);
+        OH::Storage::Result result, int32 count,Liveness::Token objAlive,Liveness::Token ctxAlive);
 
-    void setRestoreScriptCallback(
+    void iSetRestoreScriptCallback(
         JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success,
         Liveness::Token,Liveness::Token ctxAlive);
 
@@ -365,7 +362,7 @@ protected:
      */
     bool stopCalled;
 
-    void iStop(bool letDie);
+    void iStop(Liveness::Token alive, bool letDie);
 
   private:
 
@@ -410,11 +407,11 @@ protected:
 
     void iStorageCommitCallback(
         JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-        bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+        OH::Storage::Result result, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
         Liveness::Token ctxAlive);
     void iStorageCountCallback(
         JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-        bool success, int32 count,Liveness::Token objAlive,
+        OH::Storage::Result result, int32 count,Liveness::Token objAlive,
         Liveness::Token ctxAlive);
     void eStorageErase(
         const OH::Storage::Key& key, v8::Persistent<v8::Function> cb,

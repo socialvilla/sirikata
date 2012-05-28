@@ -36,7 +36,6 @@
 #include <sirikata/core/network/StreamListenerFactory.hpp>
 #include <sirikata/core/options/CommonOptions.hpp>
 #include <sirikata/core/util/PluginManager.hpp>
-#include <sirikata/core/network/IOServiceFactory.hpp>
 #include <sirikata/core/network/IOService.hpp>
 #include <sirikata/core/network/IOStrand.hpp>
 
@@ -129,6 +128,7 @@ int main(int argc, char** argv) {
 
     PluginManager plugins;
     plugins.loadList( GetOptionValue<String>(OPT_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_EXTRA_PLUGINS) );
 
     // Fill defaults after plugin loading to ensure plugin-added
     // options get their defaults.
@@ -139,8 +139,8 @@ int main(int argc, char** argv) {
 
     ReportVersion(); // After options so log goes to the right place
 
-    Network::IOService* ios = Network::IOServiceFactory::makeIOService();
-    Network::IOStrand* iostrand = ios->createStrand();
+    Network::IOService* ios = new Network::IOService("StreamEcho");
+    Network::IOStrand* iostrand = ios->createStrand("StreamEcho Main");
 
     String stream_type = GetOptionValue<String>("ohstreamlib");
     String stream_opts = GetOptionValue<String>("ohstreamoptions");
@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
     ios->run();
 
     delete iostrand;
-    Network::IOServiceFactory::destroyIOService(ios);
+    delete ios;
 
     return 0;
 }

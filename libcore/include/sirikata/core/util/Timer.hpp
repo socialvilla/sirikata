@@ -45,6 +45,13 @@ class SIRIKATA_EXPORT Timer {
     static Sirikata::AtomicValue<Duration> sOffset;
 
 public:
+    /** Sleep for approximately the given duration.
+     *
+     *  \note Use this carefully: unless you're running on threads you've
+     *  allocated yourself, using this is probably the wrong thing to do.
+     */
+    static void sleep(const Duration& dt);
+
     static void setSystemClockOffset(const Duration &skew);
     static Duration getSystemClockOffset();
     static Time getSpecifiedDate(const std::string&datestring);
@@ -69,6 +76,21 @@ public:
     void start();
     Time getTimerStarted()const;
     static Time now();
+    /** Get the value returned by a recent call to now(). Avoids the overhead of
+     *  actually checking the time if you know something else is checking it
+     *  frequently enough
+     */
+    static Time recentNow();
+
+    /** Get the (approximate) amount of time elapsed since the process started. */
+    static Duration processElapsed();
+    /** Get the (approximate) amount of time elapsed since the process started
+     *  based on a recent check of the timer. This can be out of date, but is
+     *  fairly accurate if you regularly check the time and much faster than
+     *  processElapsed().
+     */
+    static Duration recentProcessElapsed();
+
     Duration elapsed()const;
 
 private:

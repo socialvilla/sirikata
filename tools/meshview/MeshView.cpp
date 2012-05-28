@@ -31,7 +31,6 @@
  */
 
 #include <sirikata/core/service/Context.hpp>
-#include <sirikata/core/network/IOServiceFactory.hpp>
 #include <sirikata/core/network/IOService.hpp>
 
 #include <sirikata/core/options/Options.hpp>
@@ -64,7 +63,9 @@ public:
     {
         this->addListener(this);
     }
-    virtual ~MeshViewEntity() {}
+    virtual ~MeshViewEntity() {
+        Liveness::letDie();
+    }
 
     // Entity Interface
     virtual BoundingSphere3f bounds() { return BoundingSphere3f(Vector3f(0,0,0), 1.f); }
@@ -97,6 +98,7 @@ int main(int argc, char** argv) {
 
     PluginManager plugins;
     plugins.loadList( GetOptionValue<String>(OPT_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_EXTRA_PLUGINS) );
     // FIXME this should be an option
     plugins.loadList( "colladamodels,mesh-billboard,common-filters,nvtt" );
 
@@ -109,15 +111,15 @@ int main(int argc, char** argv) {
 
     ReportVersion(); // After options so log goes to the right place
 
-    Network::IOService* ios = Network::IOServiceFactory::makeIOService();
-    Network::IOStrand* iostrand = ios->createStrand();
+    Network::IOService* ios = new Network::IOService("MeshView");
+    Network::IOStrand* iostrand = ios->createStrand("MeshView Main");
 
     Trace::Trace* trace = new Trace::Trace("meshview.log");
     Time epoch = Timer::now();
 
     Context* ctx = new Context("MeshView", ios, iostrand, trace, epoch);
 
-    OgreRenderer* renderer = new OgreRenderer(ctx,Network::IOStrandPtr(ios->createStrand()));
+    OgreRenderer* renderer = new OgreRenderer(ctx,Network::IOStrandPtr(ios->createStrand("OgreRenderer")));
     renderer->initialize("", false);
 
     MeshViewCamera* cam = new MeshViewCamera(renderer);
@@ -146,7 +148,7 @@ int main(int argc, char** argv) {
     delete trace;
 
     delete iostrand;
-    Network::IOServiceFactory::destroyIOService(ios);
+    delete ios;
 
     return 0;
 }

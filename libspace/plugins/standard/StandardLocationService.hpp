@@ -60,7 +60,7 @@ public:
     virtual const String& mesh(const UUID& uuid);
     virtual const String& physics(const UUID& uuid);
 
-    virtual void addLocalObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics);
+  virtual void addLocalObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics, const String& zernike);
     virtual void removeLocalObject(const UUID& uuid);
 
     virtual void addLocalAggregateObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics);
@@ -71,7 +71,7 @@ public:
     virtual void updateLocalAggregateMesh(const UUID& uuid, const String& newval);
     virtual void updateLocalAggregatePhysics(const UUID& uuid, const String& newval);
 
-    virtual void addReplicaObject(const Time& t, const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics);
+  virtual void addReplicaObject(const Time& t, const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bounds, const String& mesh, const String& physics, const String& zernike);
     virtual void removeReplicaObject(const Time& t, const UUID& uuid);
 
     virtual void receiveMessage(Message* msg);
@@ -86,7 +86,8 @@ private:
         // only used for the accessor, when returning by const& since we don't have
         // a String version within props. DO NOT use anywhere else.
         String mesh_copied_str;
-
+        String physics_copied_str;
+        
         bool local;
         bool aggregate;
     };

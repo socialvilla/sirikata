@@ -72,7 +72,8 @@ TCPStreamListener::Data::~Data() {
 void TCPStreamListener::Data::start(DataPtr shared_this) {
     assert(shared_this.get() == this);
     strand->post(
-        std::tr1::bind(&TCPStreamListener::Data::startAccept, shared_this)
+        std::tr1::bind(&TCPStreamListener::Data::startAccept, shared_this),
+        "TCPStreamListener::Data::startAccept"
         );
 }
 
@@ -126,6 +127,10 @@ TCPStreamListener::TCPStreamListener(IOStrand* io, OptionSet*options)
     OptionValue *noDelay=options->referenceOption("no-delay");
     OptionValue *kernelSendBufferSize=options->referenceOption("ksend-buffer-size");
     OptionValue *kernelReceiveBufferSize=options->referenceOption("kreceive-buffer-size");
+    OptionValue *fragmentPackets=options->referenceOption("test-fragment-packet-level");
+    if (fragmentPackets->as<int>()!=-1) {
+        TCPStream::sFragmentPackets = fragmentPackets->as<int>();
+    }
 
     assert(maxSimultSockets&&sendBufferSize);
     DataPtr data (new Data(io,

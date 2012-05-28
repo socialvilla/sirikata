@@ -36,6 +36,7 @@
 #define OPT_CONFIG_FILE          "cfg"
 
 #define OPT_SPACE_PLUGINS           "space.plugins"
+#define OPT_SPACE_EXTRA_PLUGINS     "space.extra-plugins"
 
 #define SERVER_QUEUE         "server.queue"
 #define SERVER_QUEUE_LENGTH  "server.queue.length"
@@ -76,6 +77,15 @@
 #define OPT_PROX_OPTIONS           "prox-options"
 
 #define OPT_MODULES                "modules"
+
+// AggregateManager options
+#define OPT_AGGMGR_HOSTNAME          "aggmgr.host"
+#define OPT_AGGMGR_SERVICE           "aggmgr.service"
+#define OPT_AGGMGR_CONSUMER_KEY      "aggmgr.consumer-key"
+#define OPT_AGGMGR_CONSUMER_SECRET   "aggmgr.consumer-secret"
+#define OPT_AGGMGR_ACCESS_KEY        "aggmgr.access-key"
+#define OPT_AGGMGR_ACCESS_SECRET     "aggmgr.access-secret"
+#define OPT_AGGMGR_USERNAME          "aggmgr.username"
 
 namespace Sirikata {
 

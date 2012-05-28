@@ -45,6 +45,11 @@
 #include <sirikata/oh/SpaceNodeSession.hpp>
 #include <sirikata/oh/ObjectNodeSession.hpp>
 
+#include <sirikata/core/command/Commander.hpp>
+
+#include <sirikata/core/transfer/TransferPool.hpp>
+#include <sirikata/core/transfer/TransferMediator.hpp>
+
 namespace Sirikata {
 class ProxyManager;
 class PluginManager;
@@ -82,6 +87,9 @@ class SIRIKATA_OH_EXPORT ObjectHost
     typedef std::tr1::unordered_map<SpaceID,SessionManager*,SpaceID::Hasher> SpaceSessionManagerMap;
 
     typedef std::tr1::unordered_map<SpaceObjectReference, HostedObjectPtr, SpaceObjectReference::Hasher> HostedObjectMap;
+    // Save weak references by ID so we can look up objects, but don't force
+    // them to stay alive.
+    typedef std::tr1::unordered_map<UUID, HostedObjectWPtr, UUID::Hasher> InternalIDHostedObjectMap;
 
     OH::Storage* mStorage;
     OH::PersistedObjectSet* mPersistentSet;
@@ -91,9 +99,13 @@ class SIRIKATA_OH_EXPORT ObjectHost
 
     uint32 mActiveHostedObjects;
     HostedObjectMap mHostedObjects;
+    InternalIDHostedObjectMap mHostedObjectsByID;
 
     typedef std::tr1::unordered_map<String, ObjectScriptManager*> ScriptManagerMap;
     ScriptManagerMap mScriptManagers;
+
+    std::tr1::shared_ptr<Transfer::TransferPool> mTransferPool;
+    Transfer::TransferMediator *mTransferMediator;
 
     std::tr1::unordered_map<String,OptionSet*> mSpaceConnectionProtocolOptions;
     ///options passed to initialization of scripts (usually path information)
@@ -133,6 +145,8 @@ public:
     /// The ObjectHost must be destroyed after all HostedObject instances.
     ~ObjectHost();
 
+    ObjectHostContext* context() const { return mContext; }
+
     /** Create an object with the specified script. This version allows you to
      *  specify the unique identifier manually, so it should only be used if you
      *  need an exact ID, e.g. if you are restoring an object.
@@ -171,6 +185,8 @@ public:
     void setQueryProcessor(OH::ObjectQueryProcessor* proc) { mQueryProcessor = proc; }
     OH::ObjectQueryProcessor* getQueryProcessor() { return mQueryProcessor; }
 
+    std::tr1::shared_ptr<Transfer::TransferPool> getTransferPool() { return mTransferPool; }
+
     // Primary HostedObject API
 
     /** Connect the object to the space with the given starting parameters.
@@ -186,6 +202,7 @@ public:
         const String& mesh,
         const String& physics,
         const String& query,
+        const String& zernike,
         ConnectedCallback connected_cb,
         MigratedCallback migrated_cb, StreamCreatedCallback stream_created_cb,
         DisconnectedCallback disconnected_cb
@@ -242,6 +259,8 @@ public:
      *  may also still be in the process of connecting that presence.
      */
     HostedObjectPtr getHostedObject(const SpaceObjectReference &id) const;
+    /** Lookup HostedObject by its internal ID. */
+    HostedObjectPtr getHostedObject(const UUID &id) const;
 
     /** Lookup the SST stream for a particular object. */
     typedef SST::Stream<SpaceObjectReference> SSTStream;
@@ -280,6 +299,16 @@ public:
     void wrappedConnectedCallback(HostedObjectWPtr ho_weak, const SpaceID& space, const ObjectReference& obj, const SessionManager::ConnectionInfo& ci, ConnectedCallback cb);
     void wrappedStreamCreatedCallback(HostedObjectWPtr ho_weak, const SpaceObjectReference& sporef, SessionManager::ConnectionEvent after, StreamCreatedCallback cb);
     void wrappedDisconnectedCallback(HostedObjectWPtr ho_weak, const SpaceObjectReference& sporef, Disconnect::Code cause, DisconnectedCallback);
+
+
+    // Commands
+    void commandListObjects(const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid);
+    void commandCreateObject(const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid);
+    void commandDestroyObject(const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid);
+    void commandObjectPresences(const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid);
+    // Helper that gets the object a command is operating on. Returns errors for
+    // you and a NULL pointer on failure.
+    HostedObjectPtr getCommandObject(const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid);
 
     // Checks serialization of access to SessionManagers
     Sirikata::SerializationCheck mSessionSerialization;

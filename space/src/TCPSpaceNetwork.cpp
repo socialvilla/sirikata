@@ -117,7 +117,8 @@ Chunk* TCPSpaceNetwork::RemoteStream::pop(Network::IOStrand* ios) {
         // readyRead() will be processed after the stream has actually
         // been paused.
         ios->post(
-            std::tr1::bind(&Sirikata::Network::Stream::readyRead, stream)
+            std::tr1::bind(&Sirikata::Network::Stream::readyRead, stream),
+            "Sirikata::Network::Stream::readyRead"
         );
     }
     return result;
@@ -273,7 +274,7 @@ TCPSpaceNetwork::TCPSpaceNetwork(SpaceContext* ctx)
     mListenOptions = StreamListenerFactory::getSingleton().getOptionParser(mStreamPlugin)(GetOptionValue<String>("spacestreamoptions"));
     mSendOptions = StreamFactory::getSingleton().getOptionParser(mStreamPlugin)(GetOptionValue<String>("spacestreamoptions"));
 
-    mIOStrand = mContext->ioService->createStrand();
+    mIOStrand = mContext->ioService->createStrand("TCPSpaceNetwork IO");
     mIOWork = new Network::IOWork(mContext->ioService, "TCPSpaceNetwork Work");
 
     mListener = StreamListenerFactory::getSingleton().getConstructor(mStreamPlugin)(mIOStrand,mListenOptions);
@@ -592,7 +593,7 @@ TCPSpaceNetwork::TCPSendStream* TCPSpaceNetwork::openConnection(Network::IOStran
     mServerIDMap->lookupInternal(
         dest,
         strand->wrap(
-            std::tr1::bind(&TCPSpaceNetwork::finishOpenConnection, this, dest, _1)
+            std::tr1::bind(&TCPSpaceNetwork::finishOpenConnection, this, dest, _1, _2)
         )
     );
 
@@ -604,7 +605,7 @@ TCPSpaceNetwork::TCPSendStream* TCPSpaceNetwork::openConnection(Network::IOStran
     return send_stream;
 }
 
-void TCPSpaceNetwork::finishOpenConnection(const ServerID& dest, Address4 addr) {
+void TCPSpaceNetwork::finishOpenConnection(const ServerID& dest, ServerID resolved_dest, Address4 addr) {
     if (addr == Address4::Null) {
         TCPNET_LOG(error,"Tried to open connection to non-existent server " << dest << ". Probably running in single-server mode.");
         return;
@@ -756,6 +757,7 @@ void TCPSpaceNetwork::setSendListener(SendListener* sl) {
 
 void TCPSpaceNetwork::listen(const ServerID& as_server, ReceiveListener* receive_listener) {
     using std::tr1::placeholders::_1;
+    using std::tr1::placeholders::_2;
 
     mReceiveListener = receive_listener;
 
@@ -764,12 +766,12 @@ void TCPSpaceNetwork::listen(const ServerID& as_server, ReceiveListener* receive
     mServerIDMap->lookupInternal(
         as_server,
         mContext->mainStrand->wrap(
-            std::tr1::bind(&TCPSpaceNetwork::finishListen, this, _1, receive_listener)
+            std::tr1::bind(&TCPSpaceNetwork::finishListen, this, _1, _2, receive_listener)
         )
     );
 }
 
-void TCPSpaceNetwork::finishListen(Address4 addr, ReceiveListener* receive_listener) {
+void TCPSpaceNetwork::finishListen(ServerID resolved_sid, Address4 addr, ReceiveListener* receive_listener) {
     using std::tr1::placeholders::_1;
     using std::tr1::placeholders::_2;
 

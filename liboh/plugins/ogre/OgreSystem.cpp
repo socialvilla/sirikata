@@ -126,7 +126,7 @@ void OgreSystem::instantiateAllObjects(ProxyManagerPtr pman)
     for (std::vector<SpaceObjectReference>::iterator iter = allORefs.begin(); iter != allORefs.end(); ++iter)
     {
         //instantiate each object in graphics system separately.
-        ProxyObjectPtr toAdd = pman->getProxyObject(*iter);
+      ProxyObjectPtr toAdd = pman->getProxyObject(*iter);
         iOnCreateProxy(livenessToken(),toAdd,true);
     }
 }
@@ -175,7 +175,7 @@ bool OgreSystem::initialize(ConnectionEventProvider* cevtprovider, VWObjectPtr v
     Transfer::DenseDataPtr cube_data = read_file(cube_path);
     Transfer::Fingerprint hash = Transfer::Fingerprint::computeDigest(cube_data->data(), cube_data->size());
     Transfer::RemoteFileMetadata fakeMetadata(hash, Transfer::URI("file:///fake.dae"), cube_data->length(), Transfer::ChunkList(), Transfer::FileHeaders());
-    mDefaultMesh = parseMeshWorkSync(fakeMetadata, Transfer::Fingerprint::null(), cube_data);
+    mDefaultMesh = parseMeshWorkSync(fakeMetadata, Transfer::Fingerprint::null(), cube_data, false);
 
     //finish instantiation here
     instantiateAllObjects(proxyManager);
@@ -230,11 +230,31 @@ bool OgreSystem::initialize(ConnectionEventProvider* cevtprovider, VWObjectPtr v
     mat->getTechnique(0)->getPass(0)->setSelfIllumination(0.25, 0.5, 0.25);
 
     initialized = true;
+
+
+    // If we already set the skybox before initialization, make sure we load it.
+    if (mSkybox && (*mSkybox))
+        mSkybox->load(mSceneManager, mResourceLoader, mTransferPool);
+
     return true;
 }
 
 
-void OgreSystem::handleUIReady() {
+void OgreSystem::handleUIReady()
+{
+    simStrand->post(
+        std::tr1::bind(&OgreSystem::iHandleUIReady,this,
+            livenessToken()),
+        "OgreSystem::iHandleUIReady"
+    );
+}
+
+
+void OgreSystem::iHandleUIReady(Liveness::Token osAlive)
+{
+    if (!osAlive)
+        return;
+
     // Currently the only blocker for being ready is that the UI loaded. If we
     // end up with more, we may need to make this just set a flag and then check
     // if all conditions are met.
@@ -307,7 +327,9 @@ void OgreSystem::onCreateProxy(ProxyObjectPtr p)
 {
     simStrand->post(
         std::tr1::bind(&OgreSystem::iOnCreateProxy,this,
-            livenessToken(),p, false));
+            livenessToken(),p, false),
+        "OgreSystem::iOnCreateProxy"
+    );
 }
 
 
@@ -317,7 +339,7 @@ void OgreSystem::iOnCreateProxy(
 {
     if (!osAlive) return;
     Liveness::Lock locked(osAlive);
-    if (!locked) 
+    if (!locked)
     {
         SILOG(ogre,error,"Received onCreateProxy after having deleted ogre system");
         return;
@@ -328,7 +350,11 @@ void OgreSystem::iOnCreateProxy(
         SILOG(ogre,warn,"Received onCreateProxy after having stopped");
         return;
     }
-    
+
+    if ( !p->isValid() ) {
+      return;
+    }
+
     //busy wait until initialized.  note that the initialization code actually
     //calls iOnCreateProxy itself (through instantiateAllObjects).  If the
     //inInit param is true then we know that the initialization code called this
@@ -378,7 +404,9 @@ void OgreSystem::onDestroyProxy(ProxyObjectPtr p)
 {
     simStrand->post(
         std::tr1::bind(&OgreSystem::iOnDestroyProxy,this,
-            livenessToken(), p));
+            livenessToken(), p),
+        "OgreSystem::iOnDestroyProxy"
+    );
 }
 
 void OgreSystem::iOnDestroyProxy(
@@ -612,7 +640,9 @@ void OgreSystem::onDisconnected(const Network::Address& addr, bool requested, co
     simStrand->post(
         std::tr1::bind(
             (&OgreSystem::iOnNetworkDisconnected),this,
-            livenessToken(), addr,requested,reason));
+            livenessToken(), addr,requested,reason),
+        "OgreSystem::iOnNetworkDisconnected"
+    );
 }
 
 void OgreSystem::iOnNetworkDisconnected(
@@ -621,7 +651,7 @@ void OgreSystem::iOnNetworkDisconnected(
 {
     if (!osAlive) return;
     Liveness::Lock locked(osAlive);
-    if (!locked) 
+    if (!locked)
     {
         SILOG(ogre,error,"Received disconnect after having deleted ogre system");
         return;
@@ -634,8 +664,8 @@ void OgreSystem::iOnNetworkDisconnected(
     }
     //don't want to disconnect before we were done connecting.
     while (!initialized){}
-    
-    
+
+
     if (!requested) {
         SILOG(ogre,fatal,"Got disconnected from space server: " << reason);
         quit(); // FIXME
@@ -650,7 +680,9 @@ void OgreSystem::onDisconnected(
     simStrand->post(
         std::tr1::bind(
             &OgreSystem::iOnSessionDisconnected,this,
-            livenessToken(),from,name));
+            livenessToken(),from,name),
+        "OgreSystem::iOnSessionDisconnected"
+    );
 }
 
 void OgreSystem::iOnSessionDisconnected(
@@ -659,7 +691,7 @@ void OgreSystem::iOnSessionDisconnected(
 {
     if (!osAlive) return;
     Liveness::Lock locked(osAlive);
-    if (!locked) 
+    if (!locked)
     {
         SILOG(ogre,error,"Received session disconnect after having deleted ogre system");
         return;
@@ -667,12 +699,17 @@ void OgreSystem::iOnSessionDisconnected(
 
     while(!initialized){}
 
+    //don't do anything if it's just one of the main presence's siblings that
+    //was disconnected.
+    if (name != mPresenceID)
+        return;
+
     if (stopped)
     {
         SILOG(ogre,error,"Received iOnDisconnecte after having stopped ogre system");
         return;
     }
-    
+
     mViewer->removeListener((SessionEventListener*)this);
     SILOG(ogre,info,"Got disconnected from space server.");
     mMouseHandler->alert("Disconnected", "Lost connection to space server...");
@@ -769,6 +806,8 @@ boost::any OgreSystem::invoke(vector<boost::any>& params)
         return setInheritScale(params);
     else if (name == "isReady")
         return isReady(params);
+    else if (name == "setSkybox")
+        return setSkybox(params);
     else
         return OgreRenderer::invoke(params);
 
@@ -814,7 +853,7 @@ boost::any OgreSystem::createWindow(const String& window_name, bool is_html, boo
             mContext, window_name, window_name,
             width, height, OverlayPosition(RP_TOPLEFT),
             simStrand);
-        
+
         if (is_html)
             ui_wv->loadHTML(content);
         else if (is_file)
@@ -1396,6 +1435,79 @@ boost::any OgreSystem::axis(vector<boost::any>& params) {
     }
 
     return boost::any();
+}
+
+boost::any OgreSystem::setSkybox(std::vector<boost::any>& params) {
+    if (params.size() < 2) return boost::any();
+    // setSkybox shape image_url
+    if (!Invokable::anyIsString(params[1])) return boost::any();
+
+    // We can accept just one parameter if the user is trying to disable the
+    // skybox
+    String shape_str = Invokable::anyAsString(params[1]);
+    if (shape_str == "disabled") {
+        if (mSkybox && (*mSkybox) && initialized)
+            mSkybox->unload();
+        mSkybox = SkyboxPtr(new Skybox());
+    }
+
+    // Otherwise, we need all the params
+    if (params.size() < 3) return boost::any();
+    if (!Invokable::anyIsString(params[2]))
+        return boost::any();
+
+    if ((params.size() > 3 && !Invokable::anyIsNumeric(params[3])) ||
+        (params.size() > 4 && !Invokable::anyIsNumeric(params[4])) ||
+        (params.size() > 5 && !Invokable::anyIsNumeric(params[5])))
+    {
+        return boost::any();
+    }
+
+    // Orientation
+    if (params.size() > 9 &&
+        !(Invokable::anyIsNumeric(params[6]) &&
+            Invokable::anyIsNumeric(params[7]) &&
+            Invokable::anyIsNumeric(params[8]) &&
+            Invokable::anyIsNumeric(params[9])))
+    {
+        return boost::any();
+    }
+
+    Skybox::SkyboxShape shape;
+    if (shape_str == "cube")
+        shape = Skybox::SKYBOX_CUBE;
+    else if (shape_str == "dome")
+        shape = Skybox::SKYBOX_DOME;
+    else if (shape_str == "plane")
+        shape = Skybox::SKYBOX_PLANE;
+    else
+        return boost::any();
+
+    String image_url = Invokable::anyAsString(params[2]);
+
+    if (mSkybox && (*mSkybox) && initialized)
+        mSkybox->unload();
+
+    mSkybox = SkyboxPtr(new Skybox(shape, image_url));
+    if (params.size() > 3)
+        mSkybox->distance = Invokable::anyAsNumeric(params[3]);
+    if (params.size() > 4)
+        mSkybox->tiling = Invokable::anyAsNumeric(params[4]);
+    if (params.size() > 5)
+        mSkybox->curvature = Invokable::anyAsNumeric(params[5]);
+
+    if (params.size() > 9)
+        mSkybox->orientation = Quaternion(
+            Invokable::anyAsNumeric(params[6]),
+            Invokable::anyAsNumeric(params[7]),
+            Invokable::anyAsNumeric(params[8]),
+            Invokable::anyAsNumeric(params[9])
+        );
+
+    if (mSkybox && (*mSkybox) && initialized)
+        mSkybox->load(mSceneManager, mResourceLoader, mTransferPool);
+
+    return Invokable::asAny(true);
 }
 
 }

@@ -36,10 +36,9 @@
 #include <sirikata/core/util/PluginManager.hpp>
 #include <sirikata/oh/SimulationFactory.hpp>
 
-#include "ObjectHost.hpp"
+#include "CppObjectHost.hpp"
 #include <sirikata/mesh/LightInfo.hpp>
 #include <sirikata/oh/HostedObject.hpp>
-#include <sirikata/core/network/IOServiceFactory.hpp>
 #include <sirikata/core/network/IOService.hpp>
 #include <time.h>
 #include <boost/thread.hpp>
@@ -64,6 +63,10 @@
 #include <sirikata/mesh/Filter.hpp>
 #include <sirikata/mesh/ModelsSystemFactory.hpp>
 #include <sirikata/oh/ObjectScriptManagerFactory.hpp>
+
+#include <sirikata/core/transfer/TransferMediator.hpp>
+#include <sirikata/core/command/Commander.hpp>
+
 #ifdef __GNUC__
 #include <fenv.h>
 #endif
@@ -95,7 +98,9 @@ int main (int argc, char** argv) {
         }
     }
     plugins.loadList( GetOptionValue<String>(OPT_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_EXTRA_PLUGINS) );
     plugins.loadList( GetOptionValue<String>(OPT_OH_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_OH_EXTRA_PLUGINS) );
 
     // Fill defaults after plugin loading to ensure plugin-added
     // options get their defaults.
@@ -126,8 +131,8 @@ int main (int argc, char** argv) {
 
     srand( GetOptionValue<uint32>("rand-seed") );
 
-    Network::IOService* ios = Network::IOServiceFactory::makeIOService();
-    Network::IOStrand* mainStrand = ios->createStrand();
+    Network::IOService* ios = new Network::IOService("Object Host");
+    Network::IOStrand* mainStrand = ios->createStrand("Object Host Main");
 
     ODPSST::ConnectionManager* sstConnMgr = new ODPSST::ConnectionManager();
     OHDPSST::ConnectionManager* ohSstConnMgr = new OHDPSST::ConnectionManager();
@@ -144,6 +149,15 @@ int main (int argc, char** argv) {
     String timeseries_type = GetOptionValue<String>(OPT_TRACE_TIMESERIES);
     String timeseries_options = GetOptionValue<String>(OPT_TRACE_TIMESERIES_OPTIONS);
     Trace::TimeSeries* time_series = Trace::TimeSeriesFactory::getSingleton().getConstructor(timeseries_type)(ctx, timeseries_options);
+
+    String commander_type = GetOptionValue<String>(OPT_COMMAND_COMMANDER);
+    String commander_options = GetOptionValue<String>(OPT_COMMAND_COMMANDER_OPTIONS);
+    Command::Commander* commander = NULL;
+    if (!commander_type.empty())
+        commander = Command::CommanderFactory::getSingleton().getConstructor(commander_type)(ctx, commander_options);
+
+    Transfer::TransferMediator::getSingleton().registerContext(ctx);
+
 
     SpaceID mainSpace(GetOptionValue<UUID>(OPT_MAIN_SPACE));
 
@@ -195,7 +209,7 @@ int main (int argc, char** argv) {
     }
 
 
-    ctx->run(2);
+    ctx->run(1);
 
     ctx->cleanup();
 
@@ -219,6 +233,7 @@ int main (int argc, char** argv) {
 
 
     delete ctx;
+    delete commander;
     delete time_series;
 
     trace->shutdown();
@@ -226,7 +241,7 @@ int main (int argc, char** argv) {
     trace = NULL;
 
     delete mainStrand;
-    Network::IOServiceFactory::destroyIOService(ios);
+    delete ios;
 
     delete sstConnMgr;
     delete ohSstConnMgr;

@@ -100,6 +100,17 @@ bool OHLocationServiceCache::isLocal(const Iterator& id) {
     return true;
 }
 
+String OHLocationServiceCache::mesh(const Iterator& id) {
+    // NOTE: Only accesses via iterator, shouldn't need a lock
+    IteratorData* itdat = (IteratorData*)id.data;
+    ObjectDataMap::iterator it = itdat->it;
+    assert(it != mObjects.end());
+    return it->second.props.mesh().toString();
+}
+
+Prox::ZernikeDescriptor& OHLocationServiceCache::zernikeDescriptor(const Iterator& id) {
+  return Prox::ZernikeDescriptor::null();
+}
 
 const ObjectReference& OHLocationServiceCache::iteratorID(const Iterator& id) {
     // NOTE: Only accesses via iterator, shouldn't need a lock
@@ -190,7 +201,8 @@ void OHLocationServiceCache::objectAdded(
             std::tr1::bind(
                 &OHLocationServiceCache::notifyObjectAdded, this,
                 uuid, loc, bounds
-            )
+            ),
+            "OHLocationServiceCache::notifyObjectAdded"
         );
     }
 }
@@ -225,7 +237,8 @@ void OHLocationServiceCache::objectRemoved(const ObjectReference& uuid) {
             std::tr1::bind(
                 &OHLocationServiceCache::notifyObjectRemoved, this,
                 uuid
-            )
+            ),
+            "OHLocationServiceCache::notifyObjectRemoved"
         );
     }
 }
@@ -255,7 +268,8 @@ void OHLocationServiceCache::locationUpdated(const ObjectReference& uuid, const 
             std::tr1::bind(
                 &OHLocationServiceCache::notifyLocationUpdated, this,
                 uuid, oldval, newval
-            )
+            ),
+            "OHLocationServiceCache::notifyLocationUpdated"
         );
     }
 }
@@ -294,7 +308,8 @@ void OHLocationServiceCache::boundsUpdated(const ObjectReference& uuid, const Bo
             std::tr1::bind(
                 &OHLocationServiceCache::notifyBoundsUpdated, this,
                 uuid, oldval, newval
-            )
+            ),
+            "OHLocationServiceCache::notifyBoundsUpdated"
         );
     }
 }

@@ -44,9 +44,13 @@ class JSVisibleManager :
         public MeshListener
 {
 public:
-    JSVisibleManager(EmersonScript* eScript,JSCtx* ctx);
+    JSVisibleManager(JSCtx* ctx);
     virtual ~JSVisibleManager();
+    
+    typedef boost::recursive_mutex RMutex;
+    RMutex vmMtx;
 
+    
     /**
        Creates a new visible struct with sporef whatsVisible.  First checks if
        already have visible with sporef whatsVisible in mProxies.  If do,
@@ -79,32 +83,34 @@ public:
     virtual void onSetMesh (ProxyObjectPtr proxy, Transfer::URI const& newMesh,const SpaceObjectReference& sporef);
     virtual void onSetScale (ProxyObjectPtr proxy, float32 newScale ,const SpaceObjectReference& sporef);
     virtual void onSetPhysics (ProxyObjectPtr proxy, const String& newphy,const SpaceObjectReference& sporef);
+    virtual void onSetIsAggregate(ProxyObjectPtr proxy, bool isAggregate, const SpaceObjectReference& sporef);
 
     // Indicate whether this object is still visible to on of your presences or
     // not.
     bool isVisible(const SpaceObjectReference& sporef);
     v8::Handle<v8::Value> isVisibleV8(const SpaceObjectReference& sporef);
 
-protected:
-    void clearVisibles();
+
 
 protected:
     void iOnDestroyProxy(ProxyObjectPtr p);
-    void iOnCreateProxy(ProxyObjectPtr p);
+
 
     // Invoked when we received an update on a Proxy, making it the most up-to-date.
     void iUpdatedProxy(ProxyObjectPtr p);
 
 private:
 
+    void iOnCreateProxy(ProxyObjectPtr p);
+    void clearVisibles();
+
+    
 
     // Clean up our references to a JSVisibleData. Only ever invoked by
     // JSVisibleData's destructor when there are no more references to
     // it.
     virtual void removeVisibleData(JSVisibleData* data);
 
-
-    EmersonScript* emerScript;
     JSCtx* mCtx;
 
     typedef std::map<SpaceObjectReference, JSAggregateVisibleDataWPtr > SporefProxyMap;
@@ -113,6 +119,9 @@ private:
 
     typedef std::tr1::unordered_set<ProxyObjectPtr, ProxyObject::Hasher> TrackedObjectsMap;
     TrackedObjectsMap mTrackedObjects;
+
+
+    friend class EmersonScript;
 };
 
 } //end namespace js

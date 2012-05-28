@@ -91,6 +91,7 @@ class OgreSystem :
     Invokable* mOnResetReadyCallback;
 
     void handleUIReady();
+    void iHandleUIReady(Liveness::Token osAlive);
     void handleUIResetReady();
     void handleUpdateUIViewport(int32 left, int32 top, int32 right, int32 bottom);
 
@@ -247,6 +248,8 @@ public:
     boost::any stopAnimation(std::vector<boost::any>& params);
     boost::any isReady(std::vector<boost::any>& params);
 
+    boost::any setSkybox(std::vector<boost::any>& params);
+
     ~OgreSystem();
 
 private:
@@ -264,8 +267,8 @@ private:
         Liveness::Token osAlive, ProxyObjectPtr p, bool inInit);
     void iOnDestroyProxy(
         Liveness::Token osAlive,ProxyObjectPtr p);
-    
-    
+
+
     typedef std::tr1::unordered_map<SpaceObjectReference, ProxyEntity*, SpaceObjectReference::Hasher> EntityMap;
     EntityMap mEntityMap;
     String currentMat;

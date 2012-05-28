@@ -241,6 +241,7 @@ JSObjectScript::ScopedEvalContext::~ScopedEvalContext() {
 
 void JSObjectScript::initialize(const String& args, const String& script,int32 maxResThresh)
 {
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
 
     JSSCRIPT_SERIAL_CHECK();
@@ -263,7 +264,7 @@ void JSObjectScript::initialize(const String& args, const String& script,int32 m
     mContext =
         new JSContextStruct(
             this, NULL,sporef, Capabilities::getFullCapabilities(),
-            mManager->mContextGlobalTemplate,contIDTracker,NULL,mCtx);
+            mCtx->mContextGlobalTemplate,contIDTracker,NULL,mCtx);
 
     // By default, our eval context has:
     // 1. Empty currentScriptDir, indicating it should only use explicitly
@@ -318,11 +319,15 @@ void JSObjectScript::start() {
 void JSObjectScript::stop()
 {
     mCtx->objStrand->post(
-        std::tr1::bind(&JSObjectScript::iStop,this,true));
+        std::tr1::bind(&JSObjectScript::iStop,this,livenessToken(),true),
+        "JSObjectScript::iStop"
+    );
 }
 
-void JSObjectScript::iStop(bool letDie)
+void JSObjectScript::iStop(Liveness::Token alive, bool letDie)
 {
+    if (!alive) return;
+
     // If we're really a subclass, i.e. an EmersonScript, we'll have already
     // called letDie().
     if (letDie)
@@ -331,6 +336,7 @@ void JSObjectScript::iStop(bool letDie)
             Liveness::letDie();
     }
 
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
 
     JSSCRIPT_SERIAL_CHECK();
@@ -349,7 +355,9 @@ void JSObjectScript::iStop(bool letDie)
         mContext = NULL;
 
         mCtx->objStrand->post(
-            std::tr1::bind(&JSObjectScript::iDelContext,this,toDel,toDel->livenessToken()));
+            std::tr1::bind(&JSObjectScript::iDelContext,this,toDel,toDel->livenessToken()),
+            "JSObjectScript::iDelContext"
+        );
 
     }
 }
@@ -403,7 +411,9 @@ v8::Handle<v8::Value> JSObjectScript::storageBeginTransaction(JSContextStruct* j
 
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageBeginTransaction,this,
-            jscont,Liveness::livenessToken(),jscont->livenessToken()));
+            jscont,Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageBeginTransaction"
+    );
 
     return v8::Undefined();
 }
@@ -434,7 +444,9 @@ v8::Handle<v8::Value> JSObjectScript::storageCommit(JSContextStruct* jscont, v8:
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageCommit,this,
             jscont,v8::Persistent<v8::Function>::New(cb),
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageCommit"
+    );
 
     return v8::Undefined();
 }
@@ -465,16 +477,9 @@ void JSObjectScript::eStorageCommit(
 }
 
 
-
-/**
-   lkjs; FIXME
-
-   ERROR: Should not rely on the being around of jscont.  Should
-   pass id through instead, and look it up.;
- */
 void JSObjectScript::storageCommitCallback(
     JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-    bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+    OH::Storage::Result result, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
     Liveness::Token ctxAlive)
 {
     if (!objAlive) return;
@@ -493,12 +498,14 @@ void JSObjectScript::storageCommitCallback(
 
     mCtx->objStrand->post(
         std::tr1::bind(&JSObjectScript::iStorageCommitCallback,this,
-            jscont,cb,success,rs,Liveness::livenessToken(),jscont->livenessToken()));
+            jscont,cb,result,rs,Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::iStorageCommitCallback"
+    );
 }
 
 void JSObjectScript::iStorageCommitCallback(
     JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-    bool success, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
+    OH::Storage::Result result, OH::Storage::ReadSet* rs,Liveness::Token objAlive,
     Liveness::Token ctxAlive)
 {
     if (!objAlive) return;
@@ -523,6 +530,7 @@ void JSObjectScript::iStorageCommitCallback(
     {}
 
 
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
 
     v8::HandleScope handle_scope;
@@ -530,7 +538,7 @@ void JSObjectScript::iStorageCommitCallback(
 
     TryCatch try_catch;
 
-    v8::Handle<v8::Boolean> js_success = v8::Boolean::New(success);
+    v8::Handle<v8::Boolean> js_success = v8::Boolean::New((result == OH::Storage::SUCCESS));
     v8::Handle<v8::Value> js_rs = v8::Undefined();
     if (rs && rs->size() > 0) {
         v8::Handle<v8::Object> js_rs_obj = v8::Object::New();
@@ -550,7 +558,7 @@ void JSObjectScript::iStorageCommitCallback(
 
 void JSObjectScript::storageCountCallback(
     JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-    bool success, int32 count,Liveness::Token objAlive,
+    OH::Storage::Result result, int32 count,Liveness::Token objAlive,
     Liveness::Token ctxAlive)
 {
     if (!objAlive) return;
@@ -569,14 +577,16 @@ void JSObjectScript::storageCountCallback(
 
     mCtx->objStrand->post(
         std::tr1::bind(&JSObjectScript::iStorageCountCallback,this,
-            jscont,cb,success,count,Liveness::livenessToken(),
-            jscont->livenessToken()));
+            jscont,cb,result,count,Liveness::livenessToken(),
+            jscont->livenessToken()),
+        "JSObjectScript::iStorageCountCallback"
+    );
 }
 
 
 void JSObjectScript::iStorageCountCallback(
     JSContextStruct* jscont, v8::Persistent<v8::Function> cb,
-    bool success, int32 count,Liveness::Token objAlive,
+    OH::Storage::Result result, int32 count,Liveness::Token objAlive,
     Liveness::Token ctxAlive)
 {
     if (!objAlive) return;
@@ -599,13 +609,14 @@ void JSObjectScript::iStorageCountCallback(
     while (!mCtx->initialized())
     {}
 
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
 
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext->mContext);
     TryCatch try_catch;
 
-    v8::Handle<v8::Boolean> js_success = v8::Boolean::New(success);
+    v8::Handle<v8::Boolean> js_success = v8::Boolean::New(result == OH::Storage::SUCCESS);
     v8::Handle<v8::Integer> js_count = v8::Integer::New(count);
 
     int argc = 2;
@@ -626,7 +637,9 @@ v8::Handle<v8::Value> JSObjectScript::storageErase(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageErase,this,
             key,v8::Persistent<v8::Function>::New(cb),jscont,
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageErase"
+    );
 
     return v8::Boolean::New(true);
 }
@@ -667,7 +680,9 @@ v8::Handle<v8::Value> JSObjectScript::storageWrite(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageWrite,this,
             key,toWrite,v8::Persistent<v8::Function>::New(cb),jscont,
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageWrite"
+    );
 
     return v8::Boolean::New(true);
 }
@@ -710,7 +725,9 @@ v8::Handle<v8::Value> JSObjectScript::storageRead(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageRead,this,
             key,v8::Persistent<v8::Function>::New(cb),jscont,
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageRead"
+    );
 
     return v8::Boolean::New(true);
 }
@@ -751,7 +768,9 @@ v8::Handle<v8::Value> JSObjectScript::storageRangeRead(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageRangeRead,this,
             start,finish,v8::Persistent<v8::Function>::New(cb),jscont,
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageRangeRead"
+    );
 
     return v8::Boolean::New(true);
 }
@@ -793,7 +812,9 @@ v8::Handle<v8::Value> JSObjectScript::storageRangeErase(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageRangeErase,this,
             start,finish,v8::Persistent<v8::Function>::New(cb),jscont,
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageRangeErase"
+    );
 
     return v8::Boolean::New(true);
 }
@@ -834,7 +855,9 @@ v8::Handle<v8::Value> JSObjectScript::storageCount(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eStorageCount,this,
             start,finish,v8::Persistent<v8::Function>::New(cb),jscont,
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eStorageCount"
+    );
 
     return v8::Boolean::New(true);
 }
@@ -864,7 +887,7 @@ void JSObjectScript::eStorageCount(
     bool returner = mStorage->count(mInternalID, start, finish, wrapped_cb);
 }
 
-void JSObjectScript::setRestoreScriptCallback(
+void JSObjectScript::iSetRestoreScriptCallback(
     JSContextStruct* jscont, v8::Persistent<v8::Function> cb, bool success,
     Liveness::Token objAlive,Liveness::Token ctxAlive)
 {
@@ -876,12 +899,19 @@ void JSObjectScript::setRestoreScriptCallback(
     Liveness::Lock lockedCtx(ctxAlive);
     if (!lockedCtx) return;
 
+    while (! mCtx->initialized())
+    {}
 
     JSSCRIPT_SERIAL_CHECK();
     if (isStopped()) {
         JSLOG(warn, "Ignoring restore script callback after shutdown request.");
         return;
     }
+
+
+
+    v8::Locker locker (mCtx->mIsolate);
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
 
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext->mContext);
@@ -915,7 +945,7 @@ v8::Handle<v8::Value> JSObjectScript::pushEvalContextScopeDirectory(
         baseDir / newerDir;
 
     JSLOG(detailed,"Pushing new path "<<fullPath<<" onto scope stack.");
-    
+
     EvalContext ec(mEvalContextStack.top());
     ec.currentScriptDir = fullPath;
 
@@ -935,11 +965,11 @@ v8::Handle<v8::Value> JSObjectScript::popEvalContextScopeDirectory()
     JSLOG(detailed,
         "Popping new path "<<mEvalContextStack.top().currentScriptDir<< \
         " from scope stack.");
-    
+
     mEvalContextStack.pop();
     return v8::Undefined();
 }
-    
+
 
 
 //can instantly finish the clear operation in JSObjectScript because not in the
@@ -959,9 +989,12 @@ v8::Handle<v8::Value> JSObjectScript::setRestoreScript(
     mCtx->mainStrand->post(
         std::tr1::bind(&JSObjectScript::eSetRestoreScript,this,
             jscont,script,v8::Persistent<v8::Function>::New(cb),
-            Liveness::livenessToken(),jscont->livenessToken()));
+            Liveness::livenessToken(),jscont->livenessToken()),
+        "JSObjectScript::eSetRestoreScript"
+    );
     return v8::Undefined();
 }
+
 
 
 void JSObjectScript::eSetRestoreScript(
@@ -982,9 +1015,11 @@ void JSObjectScript::eSetRestoreScript(
     if (!cb.IsEmpty())
     {
         wrapped_cb =
-            std::tr1::bind(&JSObjectScript::setRestoreScriptCallback, this,
-                jscont, cb, _1,Liveness::livenessToken(),jscont->livenessToken());
+            mCtx->objStrand->wrap(
+                std::tr1::bind(&JSObjectScript::iSetRestoreScriptCallback, this,
+                    jscont, cb, _1,Liveness::livenessToken(),jscont->livenessToken()));
     }
+
 
     // FIXME we should really tack on any additional parameters we
     // received initially here
@@ -1010,7 +1045,7 @@ v8::Handle<v8::Value> JSObjectScript::debug_fileRead(String& filename)
     if (!boost::filesystem::is_regular_file(fullPath))
         V8_EXCEPTION_CSTR("No such file to read from");
 
-    
+
     std::ifstream fRead(fullPath.string().c_str(),
         std::ios::binary | std::ios::in);
     std::ifstream::pos_type begin, end;
@@ -1035,7 +1070,7 @@ v8::Handle<v8::Value> JSObjectScript::debug_fileRead(String& filename)
 v8::Handle<v8::Value> JSObjectScript::debug_fileWrite(String& strToWrite,String& filename)
 {
     JSSCRIPT_SERIAL_CHECK();
-    
+
     boost::filesystem::path baseDir  =
         Path::SubstitutePlaceholders(Path::Placeholders::RESOURCE(JS_PLUGINS_DIR,JS_SCRIPTS_DIR));
 
@@ -1043,7 +1078,7 @@ v8::Handle<v8::Value> JSObjectScript::debug_fileWrite(String& strToWrite,String&
     boost::filesystem::path fullPath =
         baseDir / filename;
 
-    
+
     String splitval;
 // We need to use filesystem2 on Windows because boost 1.44 doesn't expose slash through the boost::filesystem namespace.
 #if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
@@ -1063,7 +1098,7 @@ v8::Handle<v8::Value> JSObjectScript::debug_fileWrite(String& strToWrite,String&
 
         if (boost::filesystem::is_regular_file(partialPath))
             V8_EXCEPTION_CSTR("Error writing file already have file with directory name");
-            
+
         if ((!boost::filesystem::is_directory(partialPath)) &&
             (!boost::filesystem::is_regular_file(partialPath)))
         {
@@ -1114,15 +1149,17 @@ v8::Handle<v8::Value> JSObjectScript::invokeCallback(
     JSContextStruct* ctx, v8::Handle<v8::Function>& cb,
     int argc, v8::Handle<v8::Value> argv[])
 {
-    v8::Isolate::Scope iscope(mCtx->mIsolate);
     JSSCRIPT_SERIAL_CHECK();
+    v8::Locker locker (mCtx->mIsolate);
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
     return invokeCallback(ctx, NULL, cb, argc, argv);
 }
 
 v8::Handle<v8::Value> JSObjectScript::invokeCallback(JSContextStruct* ctx, v8::Handle<v8::Function>& cb)
 {
-    v8::Isolate::Scope iscope(mCtx->mIsolate);
     JSSCRIPT_SERIAL_CHECK();
+    v8::Locker locker (mCtx->mIsolate);
+    v8::Isolate::Scope iscope(mCtx->mIsolate);
     return invokeCallback(ctx, NULL, cb, 0, NULL);
 }
 
@@ -1186,7 +1223,8 @@ v8::Handle<v8::Value> JSObjectScript::emersonCompileString(const String& toCompi
         int em_compile_err = 0;
 
         String js_script_str;
-        bool successfullyCompiled = emerson_compile(String("eval statement"), em_script_str.c_str(),
+        bool successfullyCompiled = EmersonUtil::emerson_compile(
+            String("eval statement"), em_script_str.c_str(),
             js_script_str, em_compile_err, handleEmersonRecognitionError,
             &lineMap);
 
@@ -1262,9 +1300,10 @@ v8::Handle<v8::Value> JSObjectScript::internalEval(const String& em_script_str, 
             v8::String::Utf8Value parent_script_name(em_script_name->ResourceName());
 
             String js_script_str;
-            bool successfullyCompiled = emerson_compile(FromV8String(parent_script_name), em_script_str_new.c_str(),
-                                                        js_script_str, em_compile_err, handleEmersonRecognitionError,
-                                                        &lineMap);
+            bool successfullyCompiled = EmersonUtil::emerson_compile(
+                FromV8String(parent_script_name), em_script_str_new.c_str(),
+                js_script_str, em_compile_err, handleEmersonRecognitionError,
+                &lineMap);
 
 
             if (successfullyCompiled)
@@ -1280,7 +1319,12 @@ v8::Handle<v8::Value> JSObjectScript::internalEval(const String& em_script_str, 
                     {
                         std::stringstream js_script_stream(js_script_str);
                         std::ofstream temp_cache_file(temp_cache_path.c_str());
-                        boost::iostreams::copy(js_script_stream, temp_cache_file);
+                        if (temp_cache_file.fail()) {
+                          JSLOG(error, "Unable to create temporary file to save compiled emerson: " << temp_cache_path);
+                        }
+                        else {
+                          boost::iostreams::copy(js_script_stream, temp_cache_file);
+                        }
                     }
                     // Make sure we have the directories
                     boost::filesystem::create_directories( boost::filesystem::path(cache_path).parent_path() );
@@ -1473,6 +1517,7 @@ v8::Handle<v8::Value> JSObjectScript::invokeCallback(
     JSContextStruct* ctx, v8::Handle<v8::Object>* target,
     v8::Handle<v8::Function>& cb, int argc, v8::Handle<v8::Value> argv[])
 {
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
     JSSCRIPT_SERIAL_CHECK();
     if (mEvalContextStack.empty())
@@ -1789,7 +1834,7 @@ v8::Handle<v8::Value> JSObjectScript::import(const String& filename,  bool isJS)
     {
         std::string errMsg = "Cannot import " +
             filename + ". Illegal file extension.";
-        
+
         return v8::ThrowException(
             v8::Exception::Error(v8::String::New(errMsg.c_str()) ) );
     }
@@ -1862,10 +1907,10 @@ v8::Local<v8::Object> JSObjectScript::createContext(JSPresenceStruct* jspres,con
     JSSCRIPT_SERIAL_CHECK();
     v8::HandleScope handle_scope;
 
-    v8::Local<v8::Object> returner =mManager->mContextTemplate->NewInstance();
+    v8::Local<v8::Object> returner =mCtx->mContextTemplate->NewInstance();
     internalContextField =
         new JSContextStruct(
-            this,jspres,canSendTo,capNum,mManager->mContextGlobalTemplate,
+            this,jspres,canSendTo,capNum,mCtx->mContextGlobalTemplate,
             contIDTracker,creator,mCtx);
 
     mContStructMap[contIDTracker] = internalContextField;

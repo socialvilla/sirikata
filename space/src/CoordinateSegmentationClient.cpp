@@ -32,7 +32,6 @@
 
 #include "CoordinateSegmentationClient.hpp"
 #include <sirikata/core/util/Platform.hpp>
-#include <sirikata/core/network/IOServiceFactory.hpp>
 #include <sirikata/core/network/IOStrandImpl.hpp>
 
 #include <algorithm>
@@ -69,7 +68,7 @@ using Sirikata::Network::TCPListener;
 CoordinateSegmentationClient::CoordinateSegmentationClient(SpaceContext* ctx, const BoundingBox3f& region, const Vector3ui32& perdim, ServerIDMap* sidmap)
   : CoordinateSegmentation(ctx),  mBSPTreeValid(false),
     mAvailableServersCount(0), mTopLevelRegion(NULL),
-    mIOService(Network::IOServiceFactory::makeIOService()),
+    mIOService(new Network::IOService("CoordinationSegmentationClient")),
     mSidMap(sidmap), mLeaseExpiryTime(Timer::now() + Duration::milliseconds(60000.0))
 {
   mTopLevelRegion.mBoundingBox = BoundingBox3f( Vector3f(0,0,0), Vector3f(0,0,0));
@@ -80,14 +79,16 @@ CoordinateSegmentationClient::CoordinateSegmentationClient(SpaceContext* ctx, co
     mSidMap->lookupExternal(
       mContext->id(),
       mContext->mainStrand->wrap(
-          std::tr1::bind(&CoordinateSegmentationClient::handleSelfLookup, this, _1)
+          std::tr1::bind(&CoordinateSegmentationClient::handleSelfLookup, this, _1, _2)
       )
     );
   }
 }
 
 
-void CoordinateSegmentationClient::handleSelfLookup(Address4 my_addr) {
+void CoordinateSegmentationClient::handleSelfLookup(ServerID my_sid, Address4 my_addr) {
+    assert(my_sid == mContext->id());
+
     mAcceptor = boost::shared_ptr<TCPListener>(new TCPListener(*mIOService,boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), my_addr.port+10000)));
 
     startAccepting();
@@ -192,7 +193,7 @@ boost::shared_ptr<TCPSocket> CoordinateSegmentationClient::getLeasedSocket() {
   else {
     TCPResolver resolver(*mIOService);
 
-    TCPResolver::query query(boost::asio::ip::tcp::v4(), mCSEGHost, mCSEGPort);
+    TCPResolver::query query(boost::asio::ip::tcp::v4(), mCSEGHost, mCSEGPort, Network::TCPResolver::query::all_matching);
 
     TCPResolver::iterator endpoint_iterator = resolver.resolve(query);
 

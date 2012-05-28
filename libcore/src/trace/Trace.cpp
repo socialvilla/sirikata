@@ -33,12 +33,13 @@
 #include <sirikata/core/trace/Trace.hpp>
 #include <sirikata/core/network/Message.hpp>
 #include <sirikata/core/options/Options.hpp>
+#include <sirikata/core/util/Timer.hpp>
 
 #include <iostream>
 
 #include <boost/thread/locks.hpp>
 
-#if SIRIKATA_PLATFORM == SIRIKATA_WINDOWS
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
 #include <io.h>
 #endif
 
@@ -64,7 +65,7 @@ Trace::Trace(const String& filename)
    mStorageThread(NULL),
    mFinishStorage(false)
 {
-    mStorageThread = new Thread( std::tr1::bind(&Trace::storageThread, this, filename) );
+    mStorageThread = new Thread( "Trace Storage", std::tr1::bind(&Trace::storageThread, this, filename) );
 }
 
 void Trace::prepareShutdown() {
@@ -79,27 +80,32 @@ void Trace::shutdown() {
 }
 
 void Trace::storageThread(const String& filename) {
-    FILE* of = fopen(filename.c_str(), "wb");
+    FILE* of = NULL;
 
     while( !mFinishStorage.read() ) {
+        // Open the file in the loop so we never open the file if we never dump
+        // any trace data
+        if (of == NULL && !data.empty())
+            of = fopen(filename.c_str(), "wb");
+
+        if (!data.empty()) {
+            data.store(of);
+            fflush(of);
+        }
+
+        Timer::sleep(Duration::seconds(1));
+    }
+
+    if (of != NULL) {
         data.store(of);
         fflush(of);
-
-#if SIRIKATA_PLATFORM == SIRIKATA_WINDOWS
-        Sleep( Duration::seconds(1).toMilliseconds() );
+#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
+        FlushFileBuffers((HANDLE) _get_osfhandle(_fileno(of)));
 #else
-        usleep( Duration::seconds(1).toMicroseconds() );
+        fsync(fileno(of));
 #endif
+        fclose(of);
     }
-    data.store(of);
-    fflush(of);
-
-#if SIRIKATA_PLATFORM == SIRIKATA_WINDOWS
-    FlushFileBuffers((HANDLE) _get_osfhandle(_fileno(of)));
-#else
-    fsync(fileno(of));
-#endif
-    fclose(of);
 }
 
 void Trace::writeRecord(uint16 type_hint, BatchedBuffer::IOVec* data_orig, uint32 iovcnt) {

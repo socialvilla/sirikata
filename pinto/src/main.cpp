@@ -38,7 +38,6 @@
 #include <sirikata/core/trace/Trace.hpp>
 
 #include <sirikata/core/network/IOService.hpp>
-#include <sirikata/core/network/IOServiceFactory.hpp>
 
 #include "PintoContext.hpp"
 #include "PintoManager.hpp"
@@ -55,6 +54,7 @@ int main(int argc, char** argv) {
 
     PluginManager plugins;
     plugins.loadList( GetOptionValue<String>(OPT_PLUGINS));
+    plugins.loadList( GetOptionValue<String>(OPT_EXTRA_PLUGINS) );
     plugins.loadList( GetOptionValue<String>(OPT_PINTO_PLUGINS));
 
     // Fill defaults after plugin loading to ensure plugin-added
@@ -77,8 +77,8 @@ int main(int argc, char** argv) {
     Duration duration = GetOptionValue<Duration>("duration")
                         + GetOptionValue<Duration>("wait-additional");
 
-    Network::IOService* ios = Network::IOServiceFactory::makeIOService();
-    Network::IOStrand* mainStrand = ios->createStrand();
+    Network::IOService* ios = new Network::IOService("Pinto");
+    Network::IOStrand* mainStrand = ios->createStrand("Pinto Main");
 
     PintoContext* pinto_context = new PintoContext(ios, mainStrand, trace, start_time, duration);
 
@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     pinto_context = NULL;
 
     delete mainStrand;
-    Network::IOServiceFactory::destroyIOService(ios);
+    delete ios;
 
     plugins.gc();
 

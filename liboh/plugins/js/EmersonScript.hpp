@@ -66,7 +66,6 @@ namespace JS {
 
 
 class EmersonScript : public JSObjectScript,
-                      public JSVisibleManager,
                       public SessionEventListener,
                       public EmersonMessagingManager
 {
@@ -228,7 +227,7 @@ public:
     void setBounds(const SpaceObjectReference sporef, const BoundingSphere3f& bounds);
     void setVisual(const SpaceObjectReference sporef, const std::string& newMeshString);
 
-    const String& getQuery(const SpaceObjectReference& sporef) const;
+    String getQuery(const SpaceObjectReference& sporef) const;
     void setQueryFunction(const SpaceObjectReference sporef, const String& query);
 
     void setPhysicsFunction(const SpaceObjectReference sporef, const String& newPhysicsString);
@@ -276,6 +275,9 @@ public:
 
 
     JSContextStruct* rootContext() const { return mContext; }
+
+
+    JSVisibleManager jsVisMan;
 
     HostedObjectPtr mParent;
 
@@ -360,7 +362,7 @@ private:
        deserialized message object in it.
      */
     void processSandboxMessage(
-        const String& msgToSend, uint32 senderID, uint32 receiverID,
+        String msgToSend, uint32 senderID, uint32 receiverID,
         Liveness::Token alive);
 
 
@@ -420,7 +422,7 @@ private:
     //want to call letDie in iStop.  This is because we've already locked
     //liveness of Script.  If letDie is false, then, we don't call letDie until
     //we get to destructor.
-    void iStop(bool letDie);
+    void iStop(Liveness::Token alive, bool letDie);
 
     void iHandleScriptCommRead(
         const SpaceObjectReference& src, const SpaceObjectReference& dst,
@@ -438,7 +440,7 @@ private:
         ProxyObjectPtr proximateObject, const SpaceObjectReference& querier,
         Liveness::Token alive);
 
-    void iNotifyProximateHelper(
+    void iResetProximateHelper(
         JSVisibleStruct* proxVis, const SpaceObjectReference& proxTo);
 
     void  iNotifyProximate(
@@ -452,6 +454,11 @@ private:
     void iInvokeInvokable(
         std::vector<boost::any>& params,v8::Persistent<v8::Function> function_,
         Liveness::Token alive);
+
+
+    //simname, sporef
+    typedef std::vector< std::pair<String,SpaceObjectReference> > SimVec;
+    SimVec mSimulations;
 
 };
 

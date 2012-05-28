@@ -35,7 +35,7 @@
 #include "Platform.hpp"
 #include <boost/thread.hpp>
 
-#if SIRIKATA_PLATFORM != SIRIKATA_WINDOWS
+#if SIRIKATA_PLATFORM != SIRIKATA_PLATFORM_WINDOWS
 #include <sys/time.h>
 #endif
 
@@ -55,16 +55,17 @@ public:
     ~Thread() {
     }
 
-    explicit Thread(ThreadMainFunc f)
+    explicit Thread(String name, ThreadMainFunc f)
      : mImpl(
-#if SIRIKATA_PLATFORM != SIRIKATA_WINDOWS
+#if SIRIKATA_PLATFORM != SIRIKATA_PLATFORM_WINDOWS
          std::tr1::bind(
-             &Thread::initThread, this, f
+             &Thread::initThread, this, name, f
              , Thread::getProfilerData()
          )
-
 #else
-     f
+         std::tr1::bind(
+             &Thread::initThread, this, name, f
+         )
 #endif
        )
     {
@@ -113,7 +114,7 @@ public:
         boost::thread::sleep(xt);
     }
 private:
-#if SIRIKATA_PLATFORM != SIRIKATA_WINDOWS
+#if SIRIKATA_PLATFORM != SIRIKATA_PLATFORM_WINDOWS
     typedef struct itimerval ProfilerData;
     static ProfilerData getProfilerData() {
         ProfilerData prof_data;
@@ -125,8 +126,12 @@ private:
         setitimer(ITIMER_PROF, &pd, NULL);
     }
 
-    void initThread(ThreadMainFunc f, ProfilerData pd) {
+    void initThread(String name, ThreadMainFunc f, ProfilerData pd) {
         setProfilerData(pd);
+        f();
+    }
+#else
+    void initThread(String name, ThreadMainFunc f) {
         f();
     }
 #endif

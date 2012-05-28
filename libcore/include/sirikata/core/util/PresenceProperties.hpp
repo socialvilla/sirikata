@@ -9,26 +9,25 @@
 #include <sirikata/core/util/MotionVector.hpp>
 #include <sirikata/core/util/MotionQuaternion.hpp>
 #include <sirikata/core/transfer/URI.hpp>
+#include <sirikata/core/util/ObjectReference.hpp>
 
 namespace Sirikata {
 
-/** Read-only interface for PresenceProperties. Note that you need to be
- *  careful using this interface in threaded code since you can't implement a
- *  thread-safe version of this interface just by locking each accessor -- you
- *  need to lock around the calls since they return const-references. This
- *  approach currently makes sense because it allows us to avoid making copies
- *  where they aren't necessary and frequently we need locks for longer anyway,
- *  e.g. to ensure that operations on a ProxyObject are performed atomically.
+/** Read-only interface for PresenceProperties.  Copies internal data on calls
+ * instead of passing references to allow multiple threads to use without huge
+ * amounts of coordination.
  */
 class IPresencePropertiesRead {
 public:
     virtual ~IPresencePropertiesRead() {}
 
-    virtual const TimedMotionVector3f& location() const = 0;
-    virtual const TimedMotionQuaternion& orientation() const = 0;
-    virtual const BoundingSphere3f& bounds() const = 0;
-    virtual const Transfer::URI& mesh() const = 0;
-    virtual const String& physics() const = 0;
+    virtual TimedMotionVector3f location() const = 0;
+    virtual TimedMotionQuaternion orientation() const = 0;
+    virtual BoundingSphere3f bounds() const = 0;
+    virtual Transfer::URI mesh() const = 0;
+    virtual String physics() const = 0;
+    virtual bool isAggregate() const = 0;
+    virtual ObjectReference parent() const = 0;
 };
 typedef std::tr1::shared_ptr<IPresencePropertiesRead> IPresencePropertiesReadPtr;
 
@@ -43,7 +42,9 @@ public:
        mOrientation(Time::null(), MotionQuaternion(Quaternion::identity(), Quaternion::identity())),
        mBounds(Vector3f::zero(), 0),
        mMesh(),
-       mPhysics()
+       mPhysics(),
+       mIsAggregate(false),
+       mParent(ObjectReference::null())
     {}
     PresenceProperties(
         const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient,
@@ -57,27 +58,34 @@ public:
     {}
     virtual ~PresenceProperties() {}
 
-    virtual const TimedMotionVector3f& location() const { return mLoc; }
+    virtual TimedMotionVector3f location() const { return mLoc; }
     virtual bool setLocation(const TimedMotionVector3f& l) { mLoc = l; return true; }
 
-    virtual const TimedMotionQuaternion& orientation() const { return mOrientation; }
+    virtual TimedMotionQuaternion orientation() const { return mOrientation; }
     virtual bool setOrientation(const TimedMotionQuaternion& o) { mOrientation = o; return true; }
 
-    virtual const BoundingSphere3f& bounds() const { return mBounds; }
+    virtual BoundingSphere3f bounds() const { return mBounds; }
     virtual bool setBounds(const BoundingSphere3f& b) { mBounds = b; return true; }
 
-    virtual const Transfer::URI& mesh() const { return mMesh; }
+    virtual Transfer::URI mesh() const { return mMesh; }
     virtual bool setMesh(const Transfer::URI& m) { mMesh = m; return true; }
 
-    virtual const String& physics() const { return mPhysics; }
+    virtual String physics() const { return mPhysics; }
     virtual bool setPhysics(const String& p) { mPhysics = p; return true; }
 
+    virtual bool setIsAggregate(bool isAgg) { mIsAggregate = isAgg; return true; }
+    virtual bool isAggregate() const { return mIsAggregate; }
+
+    virtual bool setParent(const ObjectReference& par) { mParent = par; return true; }
+    virtual ObjectReference parent() const { return mParent; }
 protected:
     TimedMotionVector3f mLoc;
     TimedMotionQuaternion mOrientation;
     BoundingSphere3f mBounds;
     Transfer::URI mMesh;
     String mPhysics;
+    bool mIsAggregate;
+    ObjectReference mParent;
 };
 typedef std::tr1::shared_ptr<PresenceProperties> PresencePropertiesPtr;
 
@@ -93,7 +101,9 @@ public:
         LOC_BOUNDS_PART = 2,
         LOC_MESH_PART = 3,
         LOC_PHYSICS_PART = 4,
-        LOC_NUM_PART = 5
+        LOC_IS_AGG_PART = 5,
+        LOC_PARENT_PART = 6,
+        LOC_NUM_PART = 7
     };
 
     SequencedPresenceProperties()
@@ -159,6 +169,28 @@ public:
         return true;
     }
     bool setPhysics(const String& p) { return PresenceProperties::setPhysics(p); }
+
+    bool setIsAggregate(bool isAgg, uint64 seqno) {
+        if (seqno < mUpdateSeqno[LOC_IS_AGG_PART])
+            return false;
+
+        mUpdateSeqno[LOC_IS_AGG_PART] = seqno;
+        mIsAggregate = isAgg;
+        return true;
+    }
+    bool setIsAggregate(bool isAgg) { return PresenceProperties::setIsAggregate(isAgg); }
+
+
+    bool setParent(const ObjectReference& parent, uint64 seqno) {
+        if (seqno < mUpdateSeqno[LOC_PARENT_PART])
+            return false;
+
+        mUpdateSeqno[LOC_PARENT_PART] = seqno;
+        mParent = parent;
+        return true;
+    }
+    bool setParent(const ObjectReference& parent) { return PresenceProperties::setParent(parent); }
+
 
     void reset() {
         memset(mUpdateSeqno, 0, LOC_NUM_PART * sizeof(uint64));

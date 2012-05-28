@@ -39,9 +39,7 @@
 
 #include "Protocol_Loc.pbj.hpp"
 
-// Property tree for parsing the physics info
-#include <boost/property_tree/ptree.hpp>
-#include <boost/property_tree/json_parser.hpp>
+#include <json_spirit/json_spirit.h>
 
 #include <sirikata/core/transfer/AggregatedTransferPool.hpp>
 #include <sirikata/core/network/IOStrandImpl.hpp>
@@ -57,7 +55,8 @@ void bulletPhysicsInternalTickCallback(btDynamicsWorld *world, btScalar timeStep
 
 BulletPhysicsService::BulletPhysicsService(SpaceContext* ctx, LocationUpdatePolicy* update_policy)
  : LocationService(ctx, update_policy),
-   mParsingStrand( ctx->ioService->createStrand() )
+   mUpdateIteration(0),
+   mParsingStrand( ctx->ioService->createStrand("BulletPhysicsService Parsing") )
 {
 
     mBroadphase = new btDbvtBroadphase();
@@ -179,7 +178,11 @@ void BulletPhysicsService::service() {
     }
     physicsUpdates.clear();
 
-    mUpdatePolicy->service();
+    // See note at declaration of mUpdateIteration. The fastest possible update
+    // rate depends on this constant (10) and the LocationService target tick
+    // period (10ms) -- so we'll get updates at most every 100ms currently.
+    if (mUpdateIteration++ % 10 == 0)
+        mUpdatePolicy->service();
 }
 
 uint64 BulletPhysicsService::epoch(const UUID& uuid) {
@@ -239,8 +242,9 @@ const String& BulletPhysicsService::physics(const UUID& uuid) {
     LocationMap::iterator it = mLocations.find(uuid);
     assert(it != mLocations.end());
 
-    const LocationInfo& locinfo = it->second;
-    return locinfo.props.physics();
+    LocationInfo& locinfo = it->second;
+    locinfo.physics_copied_str = locinfo.props.physics();
+    return locinfo.physics_copied_str;
 }
 
 bool BulletPhysicsService::isFixed(const UUID& uuid) {
@@ -315,14 +319,14 @@ void BulletPhysicsService::getMeshCallback(Transfer::ResourceDownloadTaskPtr tas
             assert(output_data->single());
             mesh = std::tr1::dynamic_pointer_cast<Meshdata>(output_data->get());
         }
-        mContext->mainStrand->post(std::tr1::bind(cb, mesh));
+        mContext->mainStrand->post(std::tr1::bind(cb, mesh), "BulletPhysicsService::getMeshCallback");
     }
     else {
-        mContext->mainStrand->post(std::tr1::bind(cb, MeshdataPtr()));
+        mContext->mainStrand->post(std::tr1::bind(cb, MeshdataPtr()), "BulletPhysicsService::getMeshCallback");
     }
 }
 
-void BulletPhysicsService::addLocalObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bnds, const String& msh, const String& phy) {
+  void BulletPhysicsService::addLocalObject(const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bnds, const String& msh, const String& phy, const String& zernike) {
     LocationMap::iterator it = mLocations.find(uuid);
 
     // Add or update the information to the cache
@@ -350,7 +354,7 @@ void BulletPhysicsService::addLocalObject(const UUID& uuid, const TimedMotionVec
 
     // Add to the list of local objects
     CONTEXT_SPACETRACE(serverObjectEvent, mContext->id(), mContext->id(), uuid, true, loc);
-    notifyLocalObjectAdded(uuid, false, location(uuid), orientation(uuid), bounds(uuid), mesh(uuid), physics(uuid));
+    notifyLocalObjectAdded(uuid, false, location(uuid), orientation(uuid), bounds(uuid), mesh(uuid), physics(uuid), zernike);
 
     updatePhysicsWorld(uuid);
 }
@@ -370,29 +374,25 @@ void BulletPhysicsService::updatePhysicsWorld(const UUID& uuid) {
 
     if (!phy.empty()) {
         // Parsing stage
-        using namespace boost::property_tree;
-        ptree pt;
-        try {
-            std::stringstream phy_json(phy);
-            read_json(phy_json, pt);
-        }
-        catch(json_parser::json_parser_error exc) {
-            BULLETLOG(error, "Error parsing physics properties: " << phy << " (" << exc.what() << ")");
+        namespace json = json_spirit;
+        json::Value settings;
+        if (!json::read(phy, settings)) {
+            BULLETLOG(error, "Error parsing physics properties: " << phy);
             return;
         }
 
-        String objTreatmentString = pt.get("treatment", String("ignore"));
+        String objTreatmentString = settings.getString("treatment", "ignore");
         if (objTreatmentString == "static") objTreatment = BULLET_OBJECT_TREATMENT_STATIC;
         if (objTreatmentString == "dynamic") objTreatment = BULLET_OBJECT_TREATMENT_DYNAMIC;
         if (objTreatmentString == "linear_dynamic") objTreatment = BULLET_OBJECT_TREATMENT_LINEAR_DYNAMIC;
         if (objTreatmentString == "vertical_dynamic") objTreatment = BULLET_OBJECT_TREATMENT_VERTICAL_DYNAMIC;
         if (objTreatmentString == "character") objTreatment = BULLET_OBJECT_TREATMENT_CHARACTER;
 
-        String objBBoxString = pt.get("bounds", String("sphere"));
+        String objBBoxString = settings.getString("bounds", "sphere");
         if (objBBoxString == "box") objBBox = BULLET_OBJECT_BOUNDS_ENTIRE_OBJECT;
         if (objBBoxString == "triangles") objBBox = BULLET_OBJECT_BOUNDS_PER_TRIANGLE;
 
-        mass = pt.get("mass", DEFAULT_MASS);
+        mass = settings.getReal("mass", DEFAULT_MASS);
     }
 
     // Clear out previous state from the simulation.
@@ -580,7 +580,7 @@ void BulletPhysicsService::addLocalAggregateObject(const UUID& uuid, const Timed
     locinfo.aggregate = true;
 
     // Add to the list of local objects
-    notifyLocalObjectAdded(uuid, true, location(uuid), orientation(uuid), bounds(uuid), mesh(uuid), physics(uuid));
+    notifyLocalObjectAdded(uuid, true, location(uuid), orientation(uuid), bounds(uuid), mesh(uuid), physics(uuid), "");
     updatePhysicsWorld(uuid);
 }
 
@@ -639,7 +639,7 @@ void BulletPhysicsService::updateLocalAggregatePhysics(const UUID& uuid, const S
     if (oldval != newval) updatePhysicsWorld(uuid);
 }
 
-void BulletPhysicsService::addReplicaObject(const Time& t, const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bnds, const String& msh, const String& phy) {
+  void BulletPhysicsService::addReplicaObject(const Time& t, const UUID& uuid, const TimedMotionVector3f& loc, const TimedMotionQuaternion& orient, const BoundingSphere3f& bnds, const String& msh, const String& phy, const String& zernike) {
     // FIXME we should do checks on timestamps to decide which setting is "more" sane
     LocationMap::iterator it = mLocations.find(uuid);
 
@@ -673,7 +673,7 @@ void BulletPhysicsService::addReplicaObject(const Time& t, const UUID& uuid, con
 
         // We only run this notification when the object actually is new
         CONTEXT_SPACETRACE(serverObjectEvent, 0, mContext->id(), uuid, true, loc); // FIXME add remote server ID
-        notifyReplicaObjectAdded(uuid, location(uuid), orientation(uuid), bounds(uuid), mesh(uuid), physics(uuid));
+        notifyReplicaObjectAdded(uuid, location(uuid), orientation(uuid), bounds(uuid), mesh(uuid), physics(uuid), zernike);
         updatePhysicsWorld(uuid);
     }
 }

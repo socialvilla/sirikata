@@ -70,6 +70,7 @@ void JSContextStruct::httpFail(v8::Persistent<v8::Function> cb,const String& fai
         return;
     }
 
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext);
@@ -86,6 +87,7 @@ void JSContextStruct::httpSuccess(v8::Persistent<v8::Function> cb,EmersonHttpMan
         return;
     }
 
+    v8::Locker locker (mCtx->mIsolate);
     v8::Isolate::Scope iscope(mCtx->mIsolate);
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext);
@@ -170,6 +172,19 @@ void JSContextStruct::proximateEvent(const SpaceObjectReference& goneFrom,
     if (getIsSuspended() || getIsCleared())
         return;
 
+    if (cbOnConnected.IsEmpty() && !isGone)
+    {
+        JSLOG(warn,"Ignoring proximity addition because have no callback");
+        return;
+    }
+
+    if (cbOnDisconnected.IsEmpty() && isGone)
+    {
+        JSLOG(warn,"Ignoring proximity removal because have no callback");
+        return;
+    }
+
+    
     CHECK_EMERSON_SCRIPT_RETURN(emerScript,notifyProximateGone,jsObjScript);
 
     if (((associatedPresence != NULL) &&
@@ -177,6 +192,11 @@ void JSContextStruct::proximateEvent(const SpaceObjectReference& goneFrom,
         hasPresence(goneFrom))
     {
         emerScript->fireProxEvent(goneFrom, jsvis,this,isGone);
+    }
+    else
+    {
+        //we aren't using jsvis, means no one else will either
+        delete jsvis;
     }
 }
 
@@ -321,7 +341,7 @@ void JSContextStruct::flushQueuedSuspendablesToChange()
 
 //performs the initialization and population of util object, system object,
 //and system object's presences array.
-void JSContextStruct::createContextObjects()
+void JSContextStruct::createContextObjects(String* scriptToEval)
 {
     v8::HandleScope handle_scope;
     v8::Context::Scope context_scope(mContext);
@@ -358,7 +378,10 @@ void JSContextStruct::createContextObjects()
 
     //Always load the shim layer.
     //import shim
-    jsObjScript->shimImportAndEvalScript(this,"");
+    if (scriptToEval == NULL)
+        jsObjScript->shimImportAndEvalScript(this,"");
+    else
+        jsObjScript->shimImportAndEvalScript(this,*scriptToEval);
 }
 
 v8::Handle<v8::Value>  JSContextStruct::checkHeadless()
@@ -598,11 +621,7 @@ v8::Handle<v8::Value> JSContextStruct::struct_rootReset()
     //recreate system and mcontext objects
     v8::HandleScope handle_scope;
     mContext = v8::Context::New(NULL, mContGlobTempl);
-    createContextObjects();
-
-    //import shim and eval mScript
-    jsObjScript->shimImportAndEvalScript(this,mScript);
-
+    createContextObjects(&mScript);
 
     //re-load presences
     CHECK_EMERSON_SCRIPT_ERROR(emerScript,reset,jsObjScript);
@@ -793,6 +812,12 @@ void JSContextStruct::struct_asyncDeregisterSuspendable (
             return;
 
         Liveness::Lock lockedCont(contAlive);
+
+        v8::Locker locker (mCtx->mIsolate);
+        v8::Isolate::Scope iscope(mCtx->mIsolate);
+        v8::HandleScope handle_scope;
+        v8::Context::Scope context_scope(mContext);
+
         //context and suspendable are still alive.  go
         //ahead and delete normally.
         struct_deregisterSuspendable(toDeregister);

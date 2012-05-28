@@ -38,6 +38,7 @@
 #define OPT_CRASHREPORT_URL       "crashreport"
 
 #define OPT_PLUGINS               "plugins"
+#define OPT_EXTRA_PLUGINS         "extra-plugins"
 
 #define OPT_LOG_FILE                  "log-file"
 #define STATS_TRACE_FILE     "stats.trace-filename"
@@ -50,10 +51,14 @@
 #define OPT_CDN_SERVICE          "cdn.service"
 #define OPT_CDN_DNS_URI_PREFIX   "cdn.dns.prefix"
 #define OPT_CDN_DOWNLOAD_URI_PREFIX     "cdn.download.prefix"
+#define OPT_CDN_UPLOAD_URI_PREFIX   "cdn.upload.prefix"
+#define OPT_CDN_UPLOAD_STATUS_URI_PREFIX   "cdn.upload.status.prefix"
 
 #define OPT_TRACE_TIMESERIES           "trace.timeseries"
 #define OPT_TRACE_TIMESERIES_OPTIONS   "trace.timeseries-options"
 
+#define OPT_COMMAND_COMMANDER           "command.commander"
+#define OPT_COMMAND_COMMANDER_OPTIONS   "command.commander-options"
 
 namespace Sirikata {
 

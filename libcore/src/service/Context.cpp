@@ -32,20 +32,25 @@
 
 #include <sirikata/core/util/Standard.hh>
 #include <sirikata/core/service/Context.hpp>
-#include <sirikata/core/network/IOServiceFactory.hpp>
 #include <sirikata/core/network/IOStrandImpl.hpp>
 #include <boost/asio.hpp>
+#include <boost/lexical_cast.hpp>
 #include <sirikata/core/service/Breakpad.hpp>
+#include <sirikata/core/command/Commander.hpp>
+
+#define CTX_LOG(lvl, msg) SILOG(context, lvl, msg)
 
 namespace Sirikata {
 
-Context::Context(const String& name, Network::IOService* ios, Network::IOStrand* strand, Trace::Trace* _trace, const Time& epoch, const Duration& simlen)
- : ioService(ios),
+Context::Context(const String& name_, Network::IOService* ios, Network::IOStrand* strand, Trace::Trace* _trace, const Time& epoch, const Duration& simlen)
+ : name(name_),
+   ioService(ios),
    mainStrand(strand),
-   profiler( new TimeProfiler(name) ),
+   profiler(NULL),
    timeSeries(NULL),
    mFinishedTimer( Network::IOTimer::create(ios) ),
    mTrace(_trace),
+   mCommander(NULL),
    mEpoch(epoch),
    mLastSimTime(Time::null()),
    mSimDuration(simlen),
@@ -54,10 +59,13 @@ Context::Context(const String& name, Network::IOService* ios, Network::IOStrand*
    mKillTimer(),
    mStopRequested(false)
 {
+    CTX_LOG(info, "Creating context");
   Breakpad::init();
+  profiler = new TimeProfiler(this, name);
 }
 
 Context::~Context() {
+    CTX_LOG(info, "Destroying context");
     delete profiler;
 }
 
@@ -81,13 +89,15 @@ void Context::start() {
 }
 
 void Context::run(uint32 nthreads, ExecutionThreads exthreads) {
+    CTX_LOG(info, "Starting context execution with " << nthreads << " threads");
+
     mExecutionThreadsType = exthreads;
 
     uint32 nworkers = (exthreads == IncludeOriginal ? nthreads-1 : nthreads);
     // Start workers
-    for(uint32 i = 1; i < nworkers; i++) {
+    for(uint32 i = 0; i < nworkers; i++) {
         mWorkerThreads.push_back(
-            new Thread( std::tr1::bind(&Context::workerThread, this) )
+            new Thread( name + " Worker " + boost::lexical_cast<String>(i), std::tr1::bind(&Context::workerThread, this) )
         );
     }
 
@@ -117,6 +127,8 @@ void Context::cleanupWorkerThreads() {
 }
 
 void Context::shutdown() {
+    CTX_LOG(info, "Handling shutdown request");
+
     // If the original thread wasn't running this context as well, then it won't
     // be able to wait for the worker threads it created.
     if (mExecutionThreadsType != IncludeOriginal)
@@ -139,11 +151,12 @@ void Context::stop() {
 
 
 void Context::handleSignal(Signal::Type stype) {
+    CTX_LOG(info, "Requesting shutdown in response to " << Signal::typeAsString(stype));
     // Try to keep this minimal. Post the shutdown process rather than
     // actually running it here. This makes the extent of the signal
     // handling known completely in this method, whereas calling
     // shutdown can cause a cascade of cleanup.
-    ioService->post( std::tr1::bind(&Context::shutdown, this) );
+    ioService->post( std::tr1::bind(&Context::shutdown, this), "Context::shutdown" );
 }
 
 void Context::cleanup() {
@@ -158,7 +171,7 @@ void Context::cleanup() {
 
         mKillThread->join();
 
-        Network::IOServiceFactory::destroyIOService(mKillService);
+        delete mKillService;
         mKillService = NULL;
         mKillThread.reset();
     }
@@ -168,7 +181,7 @@ void Context::startForceQuitTimer() {
     // Note that we need to do this on another thread, with another IOService.
     // This is necessary to ensure that *this* doesn't keep things from
     // exiting.
-    mKillService = Network::IOServiceFactory::makeIOService();
+    mKillService = new Network::IOService("Context Kill Service");
     mKillTimer = Network::IOTimer::create(mKillService);
     mKillTimer->wait(
         Duration::seconds(5),
@@ -176,10 +189,44 @@ void Context::startForceQuitTimer() {
     );
     mKillThread = std::tr1::shared_ptr<Thread>(
         new Thread(
+            "Context Kill Thread",
             std::tr1::bind(&Network::IOService::runNoReturn, mKillService)
         )
     );
 }
 
+namespace {
+void commandShutdown(Context* ctx, const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid) {
+    Command::Result result = Command::EmptyResult();
+    cmdr->result(cmdid, result);
+    ctx->shutdown();
+}
+}
+
+void Context::setCommander(Command::Commander* c) {
+    if (mCommander != NULL) {
+        mCommander->unregisterCommand("context.shutdown");
+        mCommander->unregisterCommand("context.report-stats");
+        mCommander->unregisterCommand("context.report-all-stats");
+    }
+
+    mCommander = c;
+
+    if (mCommander != NULL) {
+        mCommander->registerCommand(
+            "context.shutdown",
+            std::tr1::bind(commandShutdown, this, _1, _2, _3)
+        );
+
+        mCommander->registerCommand(
+            "context.report-stats",
+            std::tr1::bind(&Network::IOService::commandReportStats, ioService, _1, _2, _3)
+        );
+        mCommander->registerCommand(
+            "context.report-all-stats",
+            std::tr1::bind(&Network::IOService::commandReportAllStats, _1, _2, _3)
+        );
+    }
+}
 
 } // namespace Sirikata

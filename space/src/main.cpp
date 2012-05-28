@@ -35,7 +35,6 @@
 #include <sirikata/core/util/Timer.hpp>
 #include <sirikata/core/network/NTPTimeSync.hpp>
 
-#include <sirikata/core/network/IOServiceFactory.hpp>
 #include <sirikata/core/network/IOStrandImpl.hpp>
 
 #include <sirikata/space/ObjectHostSession.hpp>
@@ -56,6 +55,7 @@
 #include <sirikata/core/options/CommonOptions.hpp>
 #include <sirikata/core/util/PluginManager.hpp>
 #include <sirikata/core/trace/Trace.hpp>
+#include <sirikata/core/command/Commander.hpp>
 #include "TCPSpaceNetwork.hpp"
 #include "FairServerMessageReceiver.hpp"
 #include "FairServerMessageQueue.hpp"
@@ -91,7 +91,7 @@ struct ServerData {
     ObjectHostSessionManager* oh_sess_mgr;
     ObjectSessionManager* obj_sess_mgr;
 };
-void createServer(Server** server_out, ModuleList* modules_out, ServerData sd, Address4 addr) {
+void createServer(Server** server_out, ModuleList* modules_out, ServerData sd, ServerID resolved_sid, Address4 addr) {
     if (addr == Address4::Null) {
         SILOG(space, fatal, "The requested server ID isn't in ServerIDMap");
         sd.space_context->shutdown();
@@ -130,7 +130,9 @@ int main(int argc, char** argv) {
 
     PluginManager plugins;
     plugins.loadList( GetOptionValue<String>(OPT_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_EXTRA_PLUGINS) );
     plugins.loadList( GetOptionValue<String>(OPT_SPACE_PLUGINS) );
+    plugins.loadList( GetOptionValue<String>(OPT_SPACE_EXTRA_PLUGINS) );
 
     // Fill defaults after plugin loading to ensure plugin-added
     // options get their defaults.
@@ -157,8 +159,8 @@ int main(int argc, char** argv) {
 
     Duration duration = GetOptionValue<Duration>("duration");
 
-    Network::IOService* ios = Network::IOServiceFactory::makeIOService();
-    Network::IOStrand* mainStrand = ios->createStrand();
+    Network::IOService* ios = new Network::IOService("Space");
+    Network::IOStrand* mainStrand = ios->createStrand("Space Main");
 
     ODPSST::ConnectionManager* sstConnMgr = new ODPSST::ConnectionManager();
     OHDPSST::ConnectionManager* ohSstConnMgr = new OHDPSST::ConnectionManager();
@@ -176,6 +178,15 @@ int main(int argc, char** argv) {
     String timeseries_type = GetOptionValue<String>(OPT_TRACE_TIMESERIES);
     String timeseries_options = GetOptionValue<String>(OPT_TRACE_TIMESERIES_OPTIONS);
     Trace::TimeSeries* time_series = Trace::TimeSeriesFactory::getSingleton().getConstructor(timeseries_type)(space_context, timeseries_options);
+
+    String commander_type = GetOptionValue<String>(OPT_COMMAND_COMMANDER);
+    String commander_options = GetOptionValue<String>(OPT_COMMAND_COMMANDER_OPTIONS);
+    Command::Commander* commander = NULL;
+    if (!commander_type.empty())
+        commander = Command::CommanderFactory::getSingleton().getConstructor(commander_type)(space_context, commander_options);
+
+    Transfer::TransferMediator::getSingleton().registerContext(space_context);
+
 
     Sirikata::SpaceNetwork* gNetwork = NULL;
     String network_type = GetOptionValue<String>(NETWORK_TYPE);
@@ -273,7 +284,7 @@ int main(int argc, char** argv) {
     //Create OSeg
     std::string oseg_type = GetOptionValue<String>(OSEG);
     std::string oseg_options = GetOptionValue<String>(OSEG_OPTIONS);
-    Network::IOStrand* osegStrand = space_context->ioService->createStrand();
+    Network::IOStrand* osegStrand = space_context->ioService->createStrand("OSeg");
     ObjectSegmentation* oseg =
         OSegFactory::getSingleton().getConstructor(oseg_type)(space_context, osegStrand, cseg, oseg_cache, oseg_options);
     //end create oseg
@@ -282,7 +293,27 @@ int main(int argc, char** argv) {
     // We have all the info to initialize the forwarder now
     forwarder->initialize(oseg, sq, server_message_receiver, loc_service);
 
-    AggregateManager* aggmgr = new AggregateManager(loc_service);
+    String aggmgr_hostname = GetOptionValue<String>(OPT_AGGMGR_HOSTNAME);
+    String aggmgr_service = GetOptionValue<String>(OPT_AGGMGR_SERVICE);
+    String aggmgr_consumer_key = GetOptionValue<String>(OPT_AGGMGR_CONSUMER_KEY);
+    String aggmgr_consumer_secret = GetOptionValue<String>(OPT_AGGMGR_CONSUMER_SECRET);
+    String aggmgr_access_key = GetOptionValue<String>(OPT_AGGMGR_ACCESS_KEY);
+    String aggmgr_access_secret = GetOptionValue<String>(OPT_AGGMGR_ACCESS_SECRET);
+    String aggmgr_username = GetOptionValue<String>(OPT_AGGMGR_USERNAME);
+    Transfer::OAuthParamsPtr aggmgr_oauth;
+    // Currently you need to explicitly override hostname to enable upload
+    if (!aggmgr_hostname.empty()&&
+        !aggmgr_consumer_key.empty() && !aggmgr_consumer_secret.empty() &&
+        !aggmgr_access_key.empty() && !aggmgr_access_secret.empty()) {
+        aggmgr_oauth = Transfer::OAuthParamsPtr(
+            new Transfer::OAuthParams(
+                aggmgr_hostname, aggmgr_service,
+                aggmgr_consumer_key, aggmgr_consumer_secret,
+                aggmgr_access_key, aggmgr_access_secret
+            )
+        );
+    }
+    AggregateManager* aggmgr = new AggregateManager(loc_service, aggmgr_oauth, aggmgr_username);
 
     std::string prox_type = GetOptionValue<String>(OPT_PROX);
     std::string prox_options = GetOptionValue<String>(OPT_PROX_OPTIONS);
@@ -295,6 +326,7 @@ int main(int argc, char** argv) {
     // registered. We pass storage for the Server to the callback so we can
     // handle cleaning it up ourselves.
     using std::tr1::placeholders::_1;
+    using std::tr1::placeholders::_2;
     Server* server = NULL;
     ModuleList modules;
     ServerData sd;
@@ -310,7 +342,7 @@ int main(int argc, char** argv) {
     server_id_map->lookupExternal(
         space_context->id(),
         space_context->mainStrand->wrap(
-            std::tr1::bind( &createServer, &server, &modules, sd, _1)
+            std::tr1::bind( &createServer, &server, &modules, sd, _1, _2)
         )
     );
 
@@ -320,11 +352,7 @@ int main(int argc, char** argv) {
         if (start_time > now_time) {
             Duration sleep_time = start_time - now_time;
             printf("Waiting %f seconds\n", sleep_time.toSeconds() ); fflush(stdout);
-#if SIRIKATA_PLATFORM == SIRIKATA_PLATFORM_WINDOWS
-            Sleep( sleep_time.toMilliseconds() );
-#else
-            usleep( sleep_time.toMicroseconds() );
-#endif
+            Timer::sleep(sleep_time);
         }
     }
 
@@ -388,12 +416,13 @@ int main(int argc, char** argv) {
     delete space_context;
     space_context = NULL;
 
+    delete commander;
     delete time_series;
 
     delete mainStrand;
     delete osegStrand;
 
-    Network::IOServiceFactory::destroyIOService(ios);
+    delete ios;
 
     delete sstConnMgr;
     delete ohSstConnMgr;

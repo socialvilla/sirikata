@@ -39,7 +39,7 @@ namespace Sirikata {
 
 ServerMessageReceiver::ServerMessageReceiver(SpaceContext* ctx, SpaceNetwork* net, Listener* listener)
         : mContext(ctx),
-          mReceiverStrand(ctx->ioService->createStrand()),
+          mReceiverStrand(ctx->ioService->createStrand("ServerMessageReceiver ReceiverStrand")),
           mNetwork(net),
           mListener(listener),
           mUsedWeightSum(0.0),
@@ -85,12 +85,13 @@ void ServerMessageReceiver::updateSenderStats(ServerID sid, double total_weight,
         std::tr1::bind(
             &ServerMessageReceiver::handleUpdateSenderStats, this,
             sid, total_weight, used_weight
-        )
+        ),
+        "ServerMessageReceiver::handleUpdateSenderStats"
     );
 }
 
 void ServerMessageReceiver::updatedSegmentation(CoordinateSegmentation* cseg, const std::vector<SegmentationInfo>& new_segmentation) {
-    NOT_IMPLEMENTED();
+    NOT_IMPLEMENTED(smreceiver);
 }
 
 } // namespace Sirikata

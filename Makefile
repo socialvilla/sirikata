@@ -1,23 +1,54 @@
 all:
-	cd build/cmake && \
-	cmake . && \
-	$(MAKE) $(*)
+	case "`uname`" in \
+		*arwin*|*MINGW*|*CYGWIN*|*win32*) \
+			cd build/cmake && \
+			cmake . && \
+			$(MAKE) $(*) \
+			;; \
+		*) \
+			cd build/cmake && \
+			./cmake_with_tools.sh . && \
+			$(MAKE) $(*) \
+			;; \
+	esac ;
 
 release:
-	cd build/cmake && \
-	cmake . -DCMAKE_BUILD_TYPE=Release && \
-	$(MAKE) $(*)
+	case "`uname`" in \
+		*arwin*|*MINGW*|*CYGWIN*|*win32*) \
+			cd build/cmake && \
+			cmake . -DCMAKE_BUILD_TYPE=Release && \
+			$(MAKE) $(*) \
+			;; \
+		*) \
+			cd build/cmake && \
+			./cmake_with_tools.sh . -DCMAKE_BUILD_TYPE=Release && \
+			$(MAKE) $(*) \
+			;; \
+	esac ;
 
+# Leaving out cmake_with_tools since this is probably running in a
+# chroot where the caching is pointless
 debian-release:
 	cd build/cmake && \
 	cmake . -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_BUILD_TYPE=Release && \
 	$(MAKE) $(*)
 
 debug:
-	cd build/cmake && \
-	cmake . -DCMAKE_BUILD_TYPE=Debug && \
-	$(MAKE) $(*)
+	case "`uname`" in \
+		*arwin*|*MINGW*|*CYGWIN*|*win32*) \
+			cd build/cmake && \
+			cmake . -DCMAKE_BUILD_TYPE=Debug && \
+			$(MAKE) $(*) \
+			;; \
+		*) \
+			cd build/cmake && \
+			./cmake_with_tools.sh . -DCMAKE_BUILD_TYPE=Debug && \
+			$(MAKE) $(*) \
+			;; \
+	esac ;
 
+# These all assume you've already run one of the standard builds, so
+# they don't need to use cmake_with_tools.
 .PHONY: test
 test:
 	cd build/cmake && \
@@ -38,9 +69,9 @@ clean:
 	( test -e Makefile && $(MAKE) clean $(*) ) || true
 
 DEPVC8REV=HEAD
-DEPVC9REV=24
-DEPOSXREV=95
-DEPSOURCE=69
+DEPVC9REV=27
+DEPOSXREV=99
+DEPSOURCE=75
 DEPARCHINDEP=7
 #========== Dependencies ===========
 
@@ -93,9 +124,6 @@ update-dependencies: distributions
 	esac ; \
 	svn co -r$(DEPARCHINDEP) http://sirikatamachindep.googlecode.com/svn/trunk/ machindependencies
 
-# deprecated
-minimaldepends: update-dependencies
-	$(MAKE) -C dependencies minimaldepends $(*)
 
 minimal-depends: update-dependencies
 	$(MAKE) -C dependencies minimal-depends $(*)
@@ -106,12 +134,14 @@ minimal-graphics-depends: update-dependencies
 minimal-depends-with-root: update-dependencies
 	$(MAKE) -C dependencies minimalrootdepends minimaldepends $(*)
 
+headless-depends: update-dependencies
+	$(MAKE) -C dependencies headless-depends $(*)
+
 depends: update-dependencies
 	$(MAKE) -C dependencies depends $(*)
 
-# deprecated
-fulldepends: update-dependencies
-	$(MAKE) -C dependencies fulldepends $(*)
+full-headless-depends: update-dependencies
+	$(MAKE) -C dependencies full-headless-depends $(*)
 
 full-depends: update-dependencies
 	$(MAKE) -C dependencies full-depends $(*)

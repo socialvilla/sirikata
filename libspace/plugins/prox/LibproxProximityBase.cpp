@@ -12,6 +12,8 @@
 
 #include <sirikata/space/AggregateManager.hpp>
 
+#include <sirikata/core/command/Commander.hpp>
+
 #define PROXLOG(level,msg) SILOG(prox,level,"[PROX] " << msg)
 
 namespace Sirikata {
@@ -80,7 +82,10 @@ void LibproxProximityBase::ProxStreamInfo<EndpointType, StreamType>::writeSomeOb
     if (prox_stream->outstanding.empty())
         prox_stream->writing = false;
     else
-        ctx->mainStrand->post(retry_rate, prox_stream->writecb);
+        ctx->mainStrand->post(
+            retry_rate, prox_stream->writecb,
+            "LibproxProximityBase::ProxStreamInfo<EndpointType, StreamType>::writeSomeObjectResults"
+        );
 }
 
 template<typename EndpointType, typename StreamType>
@@ -107,7 +112,8 @@ void LibproxProximityBase::ProxStreamInfo<EndpointType, StreamType>::requestProx
     if (!base_stream) {
         ctx->mainStrand->post(
             Duration::milliseconds((int64)5),
-            std::tr1::bind(&LibproxProximityBase::ProxStreamInfo<EndpointType,StreamType>::requestProxSubstream, parent, ctx, ep, prox_stream)
+            std::tr1::bind(&LibproxProximityBase::ProxStreamInfo<EndpointType,StreamType>::requestProxSubstream, parent, ctx, ep, prox_stream),
+            "LibproxProximityBase::ProxStreamInfo<EndpointType, StreamType>::requestProxSubstream"
         );
         return;
     }
@@ -151,7 +157,7 @@ void LibproxProximityBase::ProxStreamInfo<EndpointType, StreamType>::proxSubstre
 
 LibproxProximityBase::LibproxProximityBase(SpaceContext* ctx, LocationService* locservice, CoordinateSegmentation* cseg, SpaceNetwork* net, AggregateManager* aggmgr)
  : Proximity(ctx, locservice, cseg, net, aggmgr, Duration::milliseconds((int64)100)),
-   mProxStrand(ctx->ioService->createStrand()),
+   mProxStrand(ctx->ioService->createStrand("LibproxProximityBase Prox Strand")),
    mLocCache(NULL)
 {
     mProxServerMessageService = mContext->serverRouter()->createServerMessageService("proximity");
@@ -162,6 +168,48 @@ LibproxProximityBase::LibproxProximityBase(SpaceContext* ctx, LocationService* l
     // Deal with static/dynamic split
     mSeparateDynamicObjects = GetOptionValue<bool>(OPT_PROX_SPLIT_DYNAMIC);
     mNumQueryHandlers = (mSeparateDynamicObjects ? 2 : 1);
+    mMoveToStaticDelay = Duration::minutes(1);
+
+    // Implementations may add more commands, but these should always be
+    // available. They get dispatched to the prox strand so implementations only
+    // need to worry about processing them.
+    if (mContext->commander()) {
+        // Get basic properties (both fixed and dynamic debugging
+        // state) about this query processor.
+        mContext->commander()->registerCommand(
+            "space.prox.properties",
+            mProxStrand->wrap(
+                std::tr1::bind(&LibproxProximityBase::commandProperties, this, _1, _2, _3)
+            )
+        );
+
+        // Get a list of the handlers by name and their basic properties. The
+        // particular names and properties may be implementation dependent.
+        mContext->commander()->registerCommand(
+            "space.prox.handlers",
+            mProxStrand->wrap(
+                std::tr1::bind(&LibproxProximityBase::commandListHandlers, this, _1, _2, _3)
+            )
+        );
+
+        // Get a list of nodes within one of the handlers. Must specify the
+        // handler name as part of the request
+        mContext->commander()->registerCommand(
+            "space.prox.nodes",
+            mProxStrand->wrap(
+                std::tr1::bind(&LibproxProximityBase::commandListNodes, this, _1, _2, _3)
+            )
+        );
+
+        // Force a rebuild on one of the handlers. Must specify the handler name
+        // as part of the request.
+        mContext->commander()->registerCommand(
+            "space.prox.rebuild",
+            mProxStrand->wrap(
+                std::tr1::bind(&LibproxProximityBase::commandForceRebuild, this, _1, _2, _3)
+            )
+        );
+    }
 }
 
 LibproxProximityBase::~LibproxProximityBase() {
@@ -193,11 +241,61 @@ BoundingBox3f LibproxProximityBase::aggregateBBoxes(const BoundingBoxList& bboxe
 bool LibproxProximityBase::velocityIsStatic(const Vector3f& vel) {
     // These values are arbitrary, just meant to indicate that the object is,
     // for practical purposes, not moving.
-    return (
-        vel.x < .05f &&
-        vel.y < .05f &&
-        vel.z < .05f
-    );
+    return (vel.lengthSquared() < (0.01f*0.01f));
+}
+
+
+void LibproxProximityBase::coalesceEvents(QueryEventList& evts, uint32 per_event) {
+    // We keep two maps from UUID to QueryEvent:
+    // One for additions and one for removals. For each object, we check if we
+    // have a record of it, in the opposite map. If we have a record, this new
+    // one negates it and it's removed. If we don't, we add it into the
+    // map. By processing in order, this leaves us with just the new additions
+    // and removals.
+    typedef std::map<UUID, QueryEvent::Addition> AdditionMap;
+    typedef std::map<UUID, QueryEvent::Removal> RemovalMap;
+    AdditionMap additions;
+    RemovalMap removals;
+    while(!evts.empty()) {
+        const QueryEvent& evt = evts.front();
+
+        for(uint32 aidx = 0; aidx < evt.additions().size(); aidx++) {
+            UUID objid = evt.additions()[aidx].id();
+            if (removals.find(objid) != removals.end())
+                removals.erase(objid);
+            else
+                additions.insert(std::make_pair(objid, evt.additions()[aidx]));
+        }
+        for(uint32 ridx = 0; ridx < evt.removals().size(); ridx++) {
+            UUID objid = evt.removals()[ridx].id();
+            if (additions.find(objid) != additions.end())
+                additions.erase(objid);
+            else
+                removals.insert(std::make_pair(objid, evt.removals()[ridx]));
+        }
+        evts.pop_front();
+    }
+    // Now we just need to repack them.
+    QueryEvent next_evt;
+    while(!additions.empty() || !removals.empty()) {
+        // Get next addition or removal and remove it from our list
+        if (!additions.empty()) {
+            next_evt.additions().push_back(additions.begin()->second);
+            additions.erase(additions.begin());
+        }
+        else {
+            next_evt.removals().push_back(removals.begin()->second);
+            removals.erase(removals.begin());
+        }
+
+        // Push it onto the queue if this event is full or we're about to finish
+        if (next_evt.size() == per_event ||
+            (additions.empty() && removals.empty()))
+        {
+            evts.push_back(next_evt);
+            next_evt = QueryEvent();
+        }
+    }
 }
 
 
@@ -384,7 +482,8 @@ void LibproxProximityBase::aggregateCreated(const UUID& objid) {
             BoundingSphere3f(),
             "",
             ""
-        )
+        ),
+        "LocationService::addLocalAggregateObject"
     );
 
     mAggregateManager->addAggregate(objid);
@@ -395,7 +494,8 @@ void LibproxProximityBase::aggregateChildAdded(const UUID& objid, const UUID& ch
         std::tr1::bind(
             &LibproxProximityBase::updateAggregateLoc, this,
             objid, bnds
-        )
+        ),
+        "LibproxProximityBase::updateAggregateLoc"
     );
 
     mAggregateManager->addChild(objid, child);
@@ -407,7 +507,8 @@ void LibproxProximityBase::aggregateChildRemoved(const UUID& objid, const UUID& 
         std::tr1::bind(
             &LibproxProximityBase::updateAggregateLoc, this,
             objid, bnds
-        )
+        ),
+        "LibproxProximityBase::updateAggregateLoc"
     );
 
     mAggregateManager->removeChild(objid, child);
@@ -418,7 +519,8 @@ void LibproxProximityBase::aggregateBoundsUpdated(const UUID& objid, const Bound
         std::tr1::bind(
             &LibproxProximityBase::updateAggregateLoc, this,
             objid, bnds
-        )
+        ),
+        "LibproxProximityBase::updateAggregateLoc"
     );
 
     mAggregateManager->generateAggregateMesh(objid, Duration::seconds(300.0+rand()%300));
@@ -428,7 +530,8 @@ void LibproxProximityBase::aggregateDestroyed(const UUID& objid) {
     mContext->mainStrand->post(
         std::tr1::bind(
             &LocationService::removeLocalAggregateObject, mLocService, objid
-        )
+        ),
+        "LocationService::removeLocalAggregateObject"
     );
     mAggregateManager->removeAggregate(objid);
 }

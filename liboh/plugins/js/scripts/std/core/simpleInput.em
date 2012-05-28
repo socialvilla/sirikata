@@ -16,6 +16,8 @@ if (typeof(std.core.SimpleInput) != 'undefined')
              haveInited = true;
              guiMod.bind('responseReceived',
                          respReceivedFunc);
+             guiMod.bind('htmlSetupComplete',
+                        setupNotificationReceived);
          }
      );
      
@@ -35,6 +37,21 @@ if (typeof(std.core.SimpleInput) != 'undefined')
          var inputter = knownUsed[forWhom];
          knownUsed[forWhom] = null;
          inputter.cb(response);
+     }
+
+     //html sends an event to us, which gets handled by this function.
+     //Tells us that the simpleInput gui has been displayed
+     function setupNotificationReceived(id)
+     {
+         if ((!(id in knownUsed)) ||
+             (knownUsed[id] ===null))
+         {
+             throw new Error ('In setupNotificationReceived, had' +
+                              'have no record of id to complete ' +
+                              'setup for.');
+         }
+
+         knownUsed[id].setupComplete =true;
      }
      
      
@@ -59,6 +76,9 @@ if (typeof(std.core.SimpleInput) != 'undefined')
         option.  The second element should contain a code that gets
         passed back to cb so that the scripter knows what was
         selected.  Code must be text.
+
+        if NO_INPUT is entered as type, then just display message
+        without getting any response back.
       */
      std.core.SimpleInput = function(type, message, cb, additional)
      {
@@ -69,7 +89,8 @@ if (typeof(std.core.SimpleInput) != 'undefined')
          this.message    = message;
          this.cb         = cb;
          this.additional = additional;
-
+         this.setupComplete = false;
+         
          if ((type == std.core.SimpleInput.SELECT_LIST) &&
              (typeof(this.additional) == 'undefined'))
          {
@@ -85,6 +106,8 @@ if (typeof(std.core.SimpleInput) != 'undefined')
              callFunc = 'simpleInputSelectList';
          else if (type == std.core.SimpleInput.ENTER_TEXT)
              callFunc = 'simpleInputSelectText';
+         else if (type == std.core.SimpleInput.NO_INPUT)
+             callFunc = 'simpleInputNoInput';
          else
              throw new Error ('Error: please select a valid type ' +
                               'for SimpleInput');
@@ -92,18 +115,65 @@ if (typeof(std.core.SimpleInput) != 'undefined')
          guiMod.call(callFunc,message,this.indexUsed,additional);
      };
 
+     
      /*** Types of simple input to get  ***/
      //note: if add to any additional ones of these, then
      //must also add to if-else if statement in constructor
      //of SimpleInput
      std.core.SimpleInput.SELECT_LIST = 0;
      std.core.SimpleInput.ENTER_TEXT  = 1;
-
+     //used just to display a message, not to get any user response
+     //from.
+     std.core.SimpleInput.NO_INPUT = 2;
+     
      std.core.SimpleInput.ready = function()
      {
          return haveInited;
      };
 
+
+     std.core.SimpleInput.prototype.clear = function()
+     {
+         
+         if ((!haveInited) || (!this.setupComplete))
+         {
+             //NOTE: this isn't actually safe.  If scripter calls
+             //clear before graphics (for all simpleInputs) are
+             //inited, will still see
+             //the graphics object (briefly), and may be able to
+             //respond to its selection in this way.
+             //Using this solution for now, because it's easy, and
+             //unlikely to actually cause a problem.
+             system.timeout(.1,
+                 std.core.bind(this.clear,this));
+             return;
+         }
+
+         guiMod.call('clearSimpleInputWindow',this.indexUsed);
+         
+         if ((!(this.indexUsed in knownUsed)) ||
+             (knownUsed[this.indexUsed] == null))
+         {
+             throw new Error('\nWarning in simple input clear. ' +
+                             this.indexUsed.toString() + ' when ' +
+                             'have no record for it.\n');
+         }
+
+
+         //actually perform cleanup later so that don't instantly
+         //re-use same id
+         system.timeout(5,
+                        std.core.bind(
+                            function()
+                            {
+                                knownUsed[this.indexUsed] = null;
+                                this.cb                   = null;
+                                this.type                 = null;
+                                this.message              = null;
+                                this.additional           = null;                                
+                            },this));
+     };
+     
 
      /**
       We want to recycle the divs,etc. associ
@@ -113,7 +183,7 @@ if (typeof(std.core.SimpleInput) != 'undefined')
          var indexToUse = null;
          for (var s in knownUsed)
          {
-             if (knownUsed[s] == null)
+             if (knownUsed[s] === null)
              {
                  indexToUse = s;
                  break;
@@ -121,7 +191,7 @@ if (typeof(std.core.SimpleInput) != 'undefined')
          }
 
          //could not find empty index.  Create new element
-         if (indexToUse == null)
+         if (indexToUse === null)
          {
              knownUsed.push(null);
              indexToUse = knownUsed.length - 1;
@@ -176,7 +246,7 @@ if (typeof(std.core.SimpleInput) != 'undefined')
 
          simpleInputSubmit = function(simpleInputID)
          {
-             var returner = null;
+             var returner = '';
              //first check to see if we got the value for a text element
              var textInputID = generateSimpleInputOptionID(simpleInputID);
              var textInput = $('#' + textInputID);
@@ -193,22 +263,27 @@ if (typeof(std.core.SimpleInput) != 'undefined')
                      returner = radioInput.val();
              }
 
-             
-             if (returner === null)
-             {
-                 sirikata.log('error','In simpleInput, selecting ' +
-                              'an input that does not exist.');
-             }
-             else
-             {
-                 sirikata.event('responseReceived',simpleInputID,returner);                     
-             }
+             //automtaically handles case of noinput type of input by
+             //passing undefined as responseReceived
+             sirikata.event('responseReceived',simpleInputID,returner);                     
 
              
-             delete existingWindows[simpleInputID];
+
              //actually remove the window from view after its question has been answered.
              var inputID = generateDivIDFromInputID(simpleInputID);
+             delete existingWindows[inputID];
              $('#'+inputID).remove();
+         };
+
+
+         clearSimpleInputWindow = function(simpleInputID)
+         {
+             var inputID = generateDivIDFromInputID(simpleInputID);
+             if (inputID in existingWindows)
+             {
+                 delete existingWindows[inputID];
+                 $('#' + inputID).remove();
+             }
          };
          
          function generateSubmitButtonHtml(simpleInputID)
@@ -238,12 +313,23 @@ if (typeof(std.core.SimpleInput) != 'undefined')
              }
              htmlInsert += generateSubmitButtonHtml(simpleInputID);
              newWindow(htmlInsert,simpleInputID);
+             sirikata.event('htmlSetupComplete',simpleInputID);
          };
 
          function generateSimpleInputOptionID(inputID)
          {
              return 'simpleInputIDOption__' + inputID.toString();
          }
+
+         simpleInputNoInput = function (message,simpleInputID)
+         {
+             var htmlInsert = message + '<br/>';
+             htmlInsert += generateSubmitButtonHtml(simpleInputID);
+             newWindow(htmlInsert,simpleInputID);
+
+             sirikata.event('htmlSetupComplete',simpleInputID);
+         };
+
          
          simpleInputSelectText = function(message,simpleInputID)
          {
@@ -267,6 +353,7 @@ if (typeof(std.core.SimpleInput) != 'undefined')
              var register_area = document.getElementById(
                  generateSimpleInputOptionID(simpleInputID));
              register_area.onkeyup = handleEnterHit;
+             sirikata.event('htmlSetupComplete',simpleInputID);
          };
          @;
 

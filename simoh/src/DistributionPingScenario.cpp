@@ -32,9 +32,8 @@
 
 #include "DistributionPingScenario.hpp"
 #include "ScenarioFactory.hpp"
-#include "ObjectHost.hpp"
+#include "SimObjectHost.hpp"
 #include "Object.hpp"
-#include <sirikata/core/options/Options.hpp>
 #include <sirikata/core/options/Options.hpp>
 #include "ConnectedObjectTracker.hpp"
 
@@ -105,14 +104,16 @@ void DistributionPingScenario::initialize(ObjectHostContext*ctx) {
     mPingPoller = new Poller(
         ctx->mainStrand,
         std::tr1::bind(&DistributionPingScenario::sendPings, this),
+        "DistributionPingScenario Ping Poller",
         Duration::seconds(1.0/mNumPingsPerSecond)
     );
 
     mGeneratePingProfiler = mContext->profiler->addStage("Object Host Generate Pings");
-    mGeneratePingsStrand = mContext->ioService->createStrand();
+    mGeneratePingsStrand = mContext->ioService->createStrand("DistributionPingScenario GeneratePings");
     mGeneratePingPoller = new Poller(
         mGeneratePingsStrand,
         std::tr1::bind(&DistributionPingScenario::generatePings, this),
+        "DistributionPingScenario Generate Ping Poller",
         Duration::seconds(1.0/mNumPingsPerSecond)
     );
 }

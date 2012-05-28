@@ -35,8 +35,6 @@
 #define SIRIKATA_TransferMediator_HPP__
 
 #include <sirikata/core/transfer/TransferPool.hpp>
-#include <map>
-#include <vector>
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/identity.hpp>
@@ -48,6 +46,8 @@
 #include <sirikata/core/network/Asio.hpp>
 #include <sirikata/core/util/Thread.hpp>
 #include <sirikata/core/util/Singleton.hpp>
+
+#include <sirikata/core/command/Commander.hpp>
 
 namespace Sirikata {
 namespace Transfer {
@@ -70,8 +70,9 @@ class SIRIKATA_EXPORT TransferMediator
 	class AggregateRequest {
 	public:
 	    //Stores the aggregated priority
-		TransferRequest::PriorityType mPriority;
-
+		Priority mPriority;
+            // Whether we've started processing this request.
+            bool mExecuting;
 	private:
 		//Maps each client's string ID to the original TransferRequest object
 		std::map<std::string, std::tr1::shared_ptr<TransferRequest> > mTransferReqs;
@@ -99,7 +100,7 @@ class SIRIKATA_EXPORT TransferMediator
 		const std::string& getIdentifier() const;
 
 		//Returns the aggregated priority value
-		TransferRequest::PriorityType getPriority() const;
+		Priority getPriority() const;
 
 		//Pass in the first client's request
 		AggregateRequest(std::tr1::shared_ptr<TransferRequest> req);
@@ -121,8 +122,8 @@ class SIRIKATA_EXPORT TransferMediator
 		indexed_by<
 			hashed_unique<tag<tagID>, const_mem_fun<AggregateRequest,const std::string &,&AggregateRequest::getIdentifier> >,
 			ordered_non_unique<tag<tagPriority>,
-			member<AggregateRequest,TransferRequest::PriorityType,&AggregateRequest::mPriority>,
-			std::greater<TransferRequest::PriorityType> >
+			member<AggregateRequest,Priority,&AggregateRequest::mPriority>,
+			std::greater<Priority> >
 		>
 	> AggregateList;
 	AggregateList mAggregateList;
@@ -200,12 +201,22 @@ class SIRIKATA_EXPORT TransferMediator
     void checkQueue();
 
     void registerPool(TransferPoolPtr pool);
+
+
+    void commandListRequests(const Command::Command& cmd, Command::Commander* cmdr, Command::CommandID cmdid);
 public:
     static TransferMediator& getSingleton();
     static void destroy();
 
     TransferMediator();
     ~TransferMediator();
+
+
+    /** Register this Context with the TransferMediator. This is a workaround to
+     *  the fact that TransferMediator is a Singleton. Currently this registers
+     *  a few commands through the Commander interface
+     */
+    void registerContext(Context* ctx);
 
     /** Used to register a client that has a pool of requests it needs
      *  serviced by the transfer mediator
